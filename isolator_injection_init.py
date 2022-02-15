@@ -36,7 +36,6 @@ import pyopencl as cl
 import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
 import math
-from pytools.obj_array import make_obj_array
 from functools import partial
 
 from grudge.array_context import PyOpenCLArrayContext
@@ -460,12 +459,11 @@ class InitACTII:
         temperature = (wall_temperature +
             (temperature - wall_temperature)*smoothing_fore*smoothing_aft)
 
-        y = make_obj_array([self._mass_frac[i] * ones
-                            for i in range(self._nspecies)])
+        y = ones*self._mass_frac
 
         #mass = eos.get_density(pressure, temperature, y)
         mass = pressure/temperature/gas_const
-        velocity = np.zeros(self._dim, dtype=object)
+        velocity = ones*np.zeros(self._dim, dtype=object)
         mom = mass*velocity
         #energy = mass*eos.get_internal_energy(temperature, y)
         energy = pressure/(gamma - 1)
@@ -517,9 +515,11 @@ class InitACTII:
              smoothing_front*smoothing_bottom*smoothing_slant)
         temperature = actx.np.where(inside_cavity, cavity_temperature, temperature)
 
-        # zero of the velocity
+        # zero out the velocity
         for i in range(self._dim):
-            velocity[i] = actx.np.where(inside_cavity, zeros, velocity[i])
+            vel_comp = velocity[i]
+            #velocity[i] = actx.np.where(inside_cavity, zeros, velocity[i])
+            velocity[i] = actx.np.where(inside_cavity, zeros, vel_comp)
 
         # fuel stream initialization
         # initially in pressure/temperature equilibrium with the cavity
@@ -559,8 +559,7 @@ class InitACTII:
         inside_injector = (left_edge*right_edge*top_edge*bottom_edge *
                            aft_edge*fore_edge)
 
-        inj_y = make_obj_array([self._inj_mass_frac[i] * ones
-                            for i in range(self._nspecies)])
+        inj_y = ones*self._inj_mass_frac
 
         inj_velocity = mach*np.zeros(self._dim, dtype=object)
         inj_velocity[0] = self._inj_vel[0]
@@ -749,6 +748,14 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     # material properties
     mu = 1.0e-5
 
+    # ACTII flow properties
+    total_pres_inflow = 2.745e5
+    total_temp_inflow = 2076.43
+
+    # injection flow properties
+    total_pres_inj = 50400
+    total_temp_inj = 300.0
+
     if user_input_file:
         input_data = None
         if rank == 0:
@@ -763,11 +770,25 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
             dim = int(input_data["dimen"])
         except KeyError:
             pass
+        try:
+            total_pres_inj = float(input_data["total_pres_inj"])
+        except KeyError:
+            pass
+        try:
+            total_temp_inj = float(input_data["total_temp_inj"])
+        except KeyError:
+            pass
 
     if rank == 0:
         print("\n#### Simluation control data: ####")
         print(f"\torder = {order}")
         print(f"\tdimen = {dim}")
+
+    if rank == 0:
+        print("\n#### Simluation setup data: ####")
+        print(f"\ttotal_pres_inj = {total_pres_inj}")
+        print(f"\ttotal_temp_inj = {total_temp_inj}")
+        print("\n#### Simluation setup data: ####")
 
     # }}}
     # working gas: O2/N2 #
@@ -798,7 +819,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         print(f"\tkappa = {kappa}")
         print(f"\tPrandtl Number  = {Pr}")
 
-    spec_diffusivity = 0. * np.ones(nspecies)
+    spec_diffusivity = 1.e-4 * np.ones(nspecies)
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
                                       species_diffusivity=spec_diffusivity)
 
@@ -814,13 +835,6 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     vel_inflow = np.zeros(shape=(dim,))
     vel_outflow = np.zeros(shape=(dim,))
     vel_injection = np.zeros(shape=(dim,))
-
-    total_pres_inflow = 2.745e5
-    total_temp_inflow = 2076.43
-
-    # injection flow properties
-    total_pres_inj = 50400
-    total_temp_inj = 300.0
 
     throat_height = 3.61909e-3
     inlet_height = 54.129e-3

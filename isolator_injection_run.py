@@ -359,7 +359,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     mw_o2 = 15.999*2
     mw_n2 = 14.0067*2
     mf_o2 = 0.273
-    # visocsity @ 400C, Pa-s
+    # viscosity @ 400C, Pa-s
     mu_o2 = 3.76e-5
     mu_n2 = 3.19e-5
     mu_mix = mu_o2*mf_o2 + mu_n2*(1-mu_o2)  # 3.3456e-5
@@ -385,7 +385,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     # 2 tracking scalars, either fuel or not-fuel
     species_names = ["air", "fuel"]
 
-    spec_diffusivity = 0. * np.ones(nspecies)
+    #spec_diffusivity = 0. * np.ones(nspecies)
+    spec_diffusivity = 1e-4 * np.ones(nspecies)
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
                                       species_diffusivity=spec_diffusivity)
 
@@ -410,7 +411,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         global_nelements = restart_data["global_nelements"]
         restart_order = int(restart_data["order"])
 
-        assert restart_data["nparts"] == nparts
+        assert restart_data["num_parts"] == nparts
     else:
         error_message = "Driver only supports restart. Start with -r <filename>"
         raise RuntimeError(error_message)
@@ -441,7 +442,6 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         logging.info("Done making discretization")
 
     vis_timer = None
-    log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
