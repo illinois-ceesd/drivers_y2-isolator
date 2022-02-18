@@ -7,8 +7,9 @@ t_final: 5.e-4
 #t_final: 5.0e-10
 order:  2
 dimen: 2
-#nspecies: 7
-nspecies: 2
+mach_inj: 0.8
+nspecies: 7
+#nspecies: 2
 #nspecies: 0
 #alpha_sc: 0.
 alpha_sc: 0.1

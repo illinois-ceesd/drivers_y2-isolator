@@ -271,7 +271,8 @@ class InitACTII:
             inj_pres, inj_temp, inj_vel, inj_mass_frac=None,
             inj_gamma_guess,
             inj_temp_sigma, inj_vel_sigma,
-            inj_ytop, inj_ybottom
+            inj_ytop, inj_ybottom,
+            inj_mach
     ):
         r"""Initialize mixture parameters.
 
@@ -337,6 +338,7 @@ class InitACTII:
         self._inj_mass_frac = inj_mass_frac
         self._inj_ytop = inj_ytop
         self._inj_ybottom = inj_ybottom
+        self._inj_mach = inj_mach
 
     def __call__(self, discr, x_vec, eos, *, time=0.0):
         """Create the solution state at locations *x_vec*.
@@ -534,7 +536,8 @@ class InitACTII:
         # initially in pressure/temperature equilibrium with the exterior flow
         zeros = 0*xpos
         xc_left = zeros + 0.65163 - 0.000001
-        xc_right = zeros + 0.72163 + 0.000001
+        #xc_right = zeros + 0.72163 + 0.000001
+        xc_right = zeros + 0.726 + 0.000001
         yc_top = zeros - 0.0083245
         yc_bottom = zeros - 0.0283245
         xc_bottom = zeros + 0.70163
@@ -605,7 +608,7 @@ class InitACTII:
         inj_velocity = mach*np.zeros(self._dim, dtype=object)
         inj_velocity[0] = self._inj_vel[0]
 
-        inj_mach = mach*0. + 1.0
+        inj_mach = mach*0. + self._inj_mach
 
         # smooth out the injection profile
         # relax to the cavity temperature/pressure/velocity
@@ -659,7 +662,7 @@ class InitACTII:
         # transition the mach number from 0 (cavitiy) to 1 (injection)
         inj_tanh = inj_sigma*(inj_x0 - xpos)
         inj_weight = 0.5*(1.0 - actx.np.tanh(inj_tanh))
-        inj_mach = inj_weight
+        inj_mach = inj_weight*inj_mach
 
         # assume a smooth transition in gamma, could calculate it
         inj_gamma = (self._gamma_guess +
@@ -679,8 +682,8 @@ class InitACTII:
         inj_mass = eos.get_density(pressure=inj_pressure,
                                    temperature=inj_temperature,
                                    species_mass_fractions=inj_y)
-        inj_energy = mass*eos.get_internal_energy(temperature=inj_temperature,
-                                              species_mass_fractions=inj_y)
+        inj_energy = inj_mass*eos.get_internal_energy(temperature=inj_temperature,
+                                                      species_mass_fractions=inj_y)
 
         inj_velocity = mach*np.zeros(self._dim, dtype=object)
         inj_mom = inj_mass*inj_velocity
@@ -719,7 +722,7 @@ class InitACTII:
         inj_mass = eos.get_density(pressure=inj_pressure,
                                    temperature=inj_temperature,
                                    species_mass_fractions=inj_y)
-        inj_energy = mass*eos.get_internal_energy(temperature=inj_temperature,
+        inj_energy = inj_mass*eos.get_internal_energy(temperature=inj_temperature,
                                                   species_mass_fractions=inj_y)
 
         # modify the velocity in the near-wall region to have a tanh profile
@@ -806,6 +809,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     # injection flow properties
     total_pres_inj = 50400
     total_temp_inj = 300.0
+    mach_inj = 1.0
 
     if user_input_file:
         input_data = None
@@ -827,6 +831,10 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
             pass
         try:
             total_temp_inj = float(input_data["total_temp_inj"])
+        except KeyError:
+            pass
+        try:
+            mach_inj = float(input_data["mach_inj"])
         except KeyError:
             pass
         try:
@@ -1005,16 +1013,15 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         print(f"\toutlet velocity {vel_outflow[0]}")
 
     # injection mach number
-    inj_mach = 1.0
     if nspecies < 3:
         gamma_inj = gamma
     else:
         gamma_inj = 0.5*(1.24 + 1.4)
 
-    pres_injection = getIsentropicPressure(mach=inj_mach,
+    pres_injection = getIsentropicPressure(mach=mach_inj,
                                            P0=total_pres_inj,
                                            gamma=gamma_inj)
-    temp_injection = getIsentropicTemperature(mach=inj_mach,
+    temp_injection = getIsentropicTemperature(mach=mach_inj,
                                               T0=total_temp_inj,
                                               gamma=gamma_inj)
 
@@ -1029,11 +1036,11 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         if rank == 0:
             print(f"injection gamma guess {gamma_inj} cantera gamma {gamma_loc}")
 
-    vel_injection[0] = -inj_mach*sos
+    vel_injection[0] = -mach_inj*sos
 
     if rank == 0:
         print("")
-        print(f"\tinjector Mach number {inj_mach}")
+        print(f"\tinjector Mach number {mach_inj}")
         print(f"\tinjector temperature {temp_injection}")
         print(f"\tinjector pressure {pres_injection}")
         print(f"\tinjector rho {rho_injection}")
@@ -1073,7 +1080,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
                           inj_vel=vel_injection, inj_mass_frac=y_fuel,
                           inj_temp_sigma=temp_sigma_injection,
                           inj_vel_sigma=vel_sigma_injection,
-                          inj_ytop=inj_ymax, inj_ybottom=inj_ymin)
+                          inj_ytop=inj_ymax, inj_ybottom=inj_ymin,
+                          inj_mach=mach_inj)
 
     viz_path = "viz_data/"
     vizname = viz_path + casename
