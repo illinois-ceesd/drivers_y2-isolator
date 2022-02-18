@@ -39,7 +39,7 @@ import math
 from pytools.obj_array import make_obj_array
 from functools import partial
 
-from grudge.array_context import (MPIPytatoPyOpenCLArrayContext,
+from grudge.array_context import (MPISingleGridWorkBalancingPytatoArrayContext,
                                   PyOpenCLArrayContext)
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
@@ -687,8 +687,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
-    #if actx_class == MPIPytatoPyOpenCLArrayContext:
-    if 0:
+    if actx_class == MPISingleGridWorkBalancingPytatoArrayContext:
         actx = actx_class(comm,
             queue,
             mpi_base_tag=14000,
@@ -1474,7 +1473,7 @@ if __name__ == "__main__":
         actx_class = PyOpenCLProfilingArrayContext
     else:
         if args.lazy:
-            actx_class = MPIPytatoPyOpenCLArrayContext
+            actx_class = MPISingleGridWorkBalancingPytatoArrayContext
         else:
             actx_class = PyOpenCLArrayContext
 

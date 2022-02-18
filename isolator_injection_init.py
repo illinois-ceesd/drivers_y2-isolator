@@ -38,7 +38,7 @@ import pyopencl.array as cla  # noqa
 import math
 from functools import partial
 
-from grudge.array_context import (MPIPytatoPyOpenCLArrayContext,
+from grudge.array_context import (MPISingleGridWorkBalancingPytatoArrayContext,
                                   PyOpenCLArrayContext)
 from arraycontext import thaw
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
@@ -54,7 +54,8 @@ from mirgecom.mpi import mpi_entry_point
 import pyopencl.tools as cl_tools
 
 from mirgecom.fluid import make_conserved
-from mirgecom.eos import IdealSingleGas
+import cantera
+from mirgecom.eos import IdealSingleGas, PyrometheusMixture
 from mirgecom.transport import SimpleTransport
 from mirgecom.gas_model import GasModel, make_fluid_state
 
@@ -268,6 +269,7 @@ class InitACTII:
             P0, T0, temp_wall, temp_sigma, vel_sigma, gamma_guess,
             mass_frac=None,
             inj_pres, inj_temp, inj_vel, inj_mass_frac=None,
+            inj_gamma_guess,
             inj_temp_sigma, inj_vel_sigma,
             inj_ytop, inj_ybottom
     ):
@@ -328,6 +330,7 @@ class InitACTII:
         self._inj_P0 = inj_pres
         self._inj_T0 = inj_temp
         self._inj_vel = inj_vel
+        self._inj_gamma_guess = inj_gamma_guess
 
         self._temp_sigma_injection = inj_temp_sigma
         self._vel_sigma_injection = inj_vel_sigma
@@ -368,8 +371,7 @@ class InitACTII:
         ytop = zeros
         ybottom = zeros
         theta = zeros
-        gamma = eos.gamma()
-        gas_const = eos.gas_const()
+        gamma = self._gamma_guess
 
         theta_geom_top = get_theta_from_data(self._geom_top)
         theta_geom_bottom = get_theta_from_data(self._geom_bottom)
@@ -380,11 +382,11 @@ class InitACTII:
                       self._throat_height)
         if self._geom_top[0][0] < self._x_throat:
             mach_left = getMachFromAreaRatio(area_ratio=area_ratio,
-                                             gamma=self._gamma_guess,
+                                             gamma=gamma,
                                              mach_guess=0.01)
         elif self._geom_top[0][0] > self._x_throat:
             mach_left = getMachFromAreaRatio(area_ratio=area_ratio,
-                                             gamma=self._gamma_guess,
+                                             gamma=gamma,
                                              mach_guess=1.01)
         else:
             mach_left = 1.0
@@ -399,11 +401,11 @@ class InitACTII:
                           self._throat_height)
             if self._geom_top[ind][0] < self._x_throat:
                 mach_right = getMachFromAreaRatio(area_ratio=area_ratio,
-                                                 gamma=self._gamma_guess,
+                                                 gamma=gamma,
                                                  mach_guess=0.01)
             elif self._geom_top[ind][0] > self._x_throat:
                 mach_right = getMachFromAreaRatio(area_ratio=area_ratio,
-                                                 gamma=self._gamma_guess,
+                                                 gamma=gamma,
                                                  mach_guess=1.01)
             else:
                 mach_right = 1.0
@@ -500,12 +502,13 @@ class InitACTII:
 
         y = ones*self._mass_frac
 
-        #mass = eos.get_density(pressure, temperature, y)
-        mass = pressure/temperature/gas_const
+        mass = eos.get_density(pressure=pressure, temperature=temperature,
+                               species_mass_fractions=y)
+        energy = mass*eos.get_internal_energy(temperature=temperature,
+                                              species_mass_fractions=y)
+
         velocity = ones*np.zeros(self._dim, dtype=object)
         mom = mass*velocity
-        #energy = mass*eos.get_internal_energy(temperature, y)
-        energy = pressure/(gamma - 1)
         cv = make_conserved(dim=self._dim, mass=mass, momentum=mom, energy=energy,
                             species_mass=mass*y)
         velocity[0] = mach*eos.sound_speed(cv, temperature)
@@ -657,9 +660,10 @@ class InitACTII:
         inj_tanh = inj_sigma*(inj_x0 - xpos)
         inj_weight = 0.5*(1.0 - actx.np.tanh(inj_tanh))
         inj_mach = inj_weight
+
         # assume a smooth transition in gamma, could calculate it
-        #inj_gamma = gamma_guess + (gamma_guess_inj - gamma_guess)*inj_weight
-        inj_gamma = gamma
+        inj_gamma = (self._gamma_guess +
+            (self._inj_gamma_guess - self._gamma_guess)*inj_weight)
 
         inj_pressure = getIsentropicPressure(
             mach=inj_mach,
@@ -672,20 +676,19 @@ class InitACTII:
             gamma=inj_gamma
         )
 
-        #inj_mass = eos.get_density(inj_pressure, inj_temperature, inj_y)
-        inj_mass = inj_pressure/inj_temperature/gas_const
+        inj_mass = eos.get_density(pressure=inj_pressure,
+                                   temperature=inj_temperature,
+                                   species_mass_fractions=inj_y)
+        inj_energy = mass*eos.get_internal_energy(temperature=inj_temperature,
+                                              species_mass_fractions=inj_y)
+
         inj_velocity = mach*np.zeros(self._dim, dtype=object)
         inj_mom = inj_mass*inj_velocity
-        #inj_energy = inj_mass*eos.get_internal_energy(inj_temperature, inj_y)
-        inj_energy = inj_pressure/(gamma - 1)
-        #print(f"energy {energy}")
 
         # the velocity magnitude
         inj_cv = make_conserved(dim=self._dim, mass=inj_mass, momentum=inj_mom,
                                 energy=inj_energy, species_mass=inj_mass*inj_y)
 
-        #sos = eos.sound_speed(cv)
-        #print(f"sos {sos}")
         inj_velocity[0] = -inj_mach*eos.sound_speed(inj_cv, inj_temperature)
 
         # relax the pressure at the cavity/injector interface
@@ -713,11 +716,11 @@ class InitACTII:
             inj_temperature = (wall_temperature +
                 (inj_temperature - wall_temperature)*smoothing_radius)
 
-        # compute the density and then energy from the pressure/temperature state
-        #inj_mass = eos.get_density(inj_pressure, inj_temperature, inj_y)
-        inj_mass = inj_pressure/inj_temperature/gas_const
-        #inj_energy = inj_mass*eos.get_internal_energy(inj_temperature, inj_y)
-        inj_energy = inj_pressure/(gamma - 1)
+        inj_mass = eos.get_density(pressure=inj_pressure,
+                                   temperature=inj_temperature,
+                                   species_mass_fractions=inj_y)
+        inj_energy = mass*eos.get_internal_energy(temperature=inj_temperature,
+                                                  species_mass_fractions=inj_y)
 
         # modify the velocity in the near-wall region to have a tanh profile
         # this approximates the BL velocity profile
@@ -737,10 +740,11 @@ class InitACTII:
 
         # recompute the mass and energy (outside the injector) to account for
         # the change in mass fraction
-        #mass = eos.get_density(pressure, temperature, y)
-        mass = pressure/temperature/gas_const
-        #energy = mass*eos.get_internal_energy(temperature, y)
-        energy = pressure/(gamma - 1)
+        mass = eos.get_density(pressure=pressure,
+                               temperature=temperature,
+                               species_mass_fractions=y)
+        energy = mass*eos.get_internal_energy(temperature=temperature,
+                                              species_mass_fractions=y)
 
         mass = actx.np.where(inside_injector, inj_mass, mass)
         velocity[0] = actx.np.where(inside_injector, inj_velocity[0], velocity[0])
@@ -779,7 +783,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
-    if actx_class == MPIPytatoPyOpenCLArrayContext:
+    if actx_class == MPISingleGridWorkBalancingPytatoArrayContext:
         actx = actx_class(comm, queue, mpi_base_tag=14000,
             allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
     else:
@@ -793,6 +797,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
 
     # material properties
     mu = 1.0e-5
+    nspecies = 0
 
     # ACTII flow properties
     total_pres_inflow = 2.745e5
@@ -824,17 +829,22 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
             total_temp_inj = float(input_data["total_temp_inj"])
         except KeyError:
             pass
+        try:
+            nspecies = int(input_data["nspecies"])
+        except KeyError:
+            pass
 
     if rank == 0:
         print("\n#### Simluation control data: ####")
         print(f"\torder = {order}")
         print(f"\tdimen = {dim}")
+        print("#### Simluation control data: ####")
 
     if rank == 0:
         print("\n#### Simluation setup data: ####")
         print(f"\ttotal_pres_inj = {total_pres_inj}")
         print(f"\ttotal_temp_inj = {total_temp_inj}")
-        print("\n#### Simluation setup data: ####")
+        print("#### Simluation setup data: ####")
 
     # }}}
     # working gas: O2/N2 #
@@ -846,6 +856,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     mw_o2 = 15.999*2
     mw_n2 = 14.0067*2
     mf_o2 = 0.273
+    mf_c2h4 = 0.5
+    mf_h2 = 0.5
     # visocsity @ 400C, Pa-s
     mu_o2 = 3.76e-5
     mu_n2 = 3.19e-5
@@ -855,25 +867,27 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     r = 8314.59/mw
     cp = r*gamma/(gamma - 1)
     Pr = 0.75
-    nspecies = 2
-
     kappa = cp*mu_mix/Pr
+    init_temperature = 300.0
 
     if rank == 0:
         print("\n#### Simluation material properties: ####")
         print(f"\tmu = {mu}")
         print(f"\tkappa = {kappa}")
         print(f"\tPrandtl Number  = {Pr}")
+        print(f"\tnspecies = {nspecies}")
+        if nspecies == 0:
+            print("\tno passive scalars, uniform ideal gas eos")
+        elif nspecies == 2:
+            print("\tpassive scalars to track air/fuel mixture, ideal gas eos")
+        else:
+            print("\tfull multi-species initialization with pyrometheus eos")
+        print("#### Simluation material properties: ####")
 
     spec_diffusivity = 1.e-4 * np.ones(nspecies)
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
                                       species_diffusivity=spec_diffusivity)
 
-    #
-    # nozzle inflow #
-    #
-    # stagnation tempertuare 2076.43 K
-    # stagnation pressure 2.745e5 Pa
     #
     # isentropic expansion based on the area ratios between the inlet (r=54e-3m) and
     # the throat (r=3.167e-3)
@@ -891,9 +905,46 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     # 2 tracking scalars, either fuel or not-fuel
     y = np.zeros(nspecies)
     y_fuel = np.zeros(nspecies)
-    y[0] = 1
-    y_fuel[1] = 1
-    species_names = ["air", "fuel"]
+    if nspecies == 2:
+        y[0] = 1
+        y_fuel[1] = 1
+        species_names = ["air", "fuel"]
+    elif nspecies > 2:
+        from mirgecom.mechanisms import get_mechanism_cti
+        mech_cti = get_mechanism_cti("uiuc")
+
+        cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
+        cantera_nspecies = cantera_soln.n_species
+        if nspecies != cantera_nspecies:
+            if rank == 0:
+                print(f"specified {nspecies=}, but cantera mechanism"
+                      f" needs nspecies={cantera_nspecies}")
+            raise RuntimeError()
+
+        i_c2h4 = cantera_soln.species_index("C2H4")
+        i_h2 = cantera_soln.species_index("H2")
+        i_ox = cantera_soln.species_index("O2")
+        i_di = cantera_soln.species_index("N2")
+        # Set the species mass fractions to the free-stream flow
+        y[i_ox] = mf_o2
+        y[i_di] = 1. - mf_o2
+        # Set the species mass fractions to the free-stream flow
+        y_fuel[i_c2h4] = mf_c2h4
+        y_fuel[i_h2] = mf_h2
+
+        one_atm = cantera.one_atm
+        cantera_soln.TPY = init_temperature, one_atm, y
+
+    # make the eos
+    if nspecies < 3:
+        eos = IdealSingleGas(gamma=gamma, gas_const=r)
+    else:
+        from mirgecom.thermochemistry import make_pyrometheus_mechanism_class
+        pyro_mech = make_pyrometheus_mechanism_class(cantera_soln)(actx.np)
+        eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
+        species_names = pyro_mech.species_names
+
+    gas_model = GasModel(eos=eos, transport=transport_model)
 
     inlet_mach = getMachFromAreaRatio(area_ratio=inlet_area_ratio,
                                       gamma=gamma,
@@ -904,11 +955,19 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     temp_inflow = getIsentropicTemperature(mach=inlet_mach,
                                            T0=total_temp_inflow,
                                            gamma=gamma)
-    rho_inflow = pres_inflow/temp_inflow/r
-    vel_inflow[0] = inlet_mach*math.sqrt(gamma*pres_inflow/rho_inflow)
+    if nspecies < 3:
+        rho_inflow = pres_inflow/temp_inflow/r
+        sos = math.sqrt(gamma*pres_inflow/rho_inflow)
+    else:
+        cantera_soln.TPY = temp_inflow, pres_inflow, y
+        rho_inflow = cantera_soln.density
+        gamma_loc = cantera_soln.cp_mass/cantera_soln.cv_mass
+        sos = math.sqrt(gamma_loc*pres_inflow/rho_inflow)
+
+    vel_inflow[0] = inlet_mach*sos
 
     if rank == 0:
-        print("#### Simluation initialization data: ####")
+        print("\n#### Simluation initialization data: ####")
         print(f"\tinlet Mach number {inlet_mach}")
         print(f"\tinlet temperature {temp_inflow}")
         print(f"\tinlet pressure {pres_inflow}")
@@ -925,21 +984,32 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     temp_outflow = getIsentropicTemperature(mach=outlet_mach,
                                             T0=total_temp_inflow,
                                             gamma=gamma)
-    rho_outflow = pres_outflow/temp_outflow/r
+
+    if nspecies < 3:
+        rho_outflow = pres_outflow/temp_outflow/r
+        sos = math.sqrt(gamma*pres_outflow/rho_outflow)
+    else:
+        cantera_soln.TPY = temp_outflow, pres_outflow, y
+        rho_outflow = cantera_soln.density
+        gamma_loc = cantera_soln.cp_mass/cantera_soln.cv_mass
+        sos = math.sqrt(gamma_loc*pres_outflow/rho_outflow)
+
     vel_outflow[0] = outlet_mach*math.sqrt(gamma*pres_outflow/rho_outflow)
 
     if rank == 0:
+        print("")
         print(f"\toutlet Mach number {outlet_mach}")
         print(f"\toutlet temperature {temp_outflow}")
         print(f"\toutlet pressure {pres_outflow}")
         print(f"\toutlet rho {rho_outflow}")
         print(f"\toutlet velocity {vel_outflow[0]}")
-        print("#### Simluation initialization data: ####\n")
 
     # injection mach number
     inj_mach = 1.0
-    # for now it's all the same material
-    gamma_inj = gamma
+    if nspecies < 3:
+        gamma_inj = gamma
+    else:
+        gamma_inj = 0.5*(1.24 + 1.4)
 
     pres_injection = getIsentropicPressure(mach=inj_mach,
                                            P0=total_pres_inj,
@@ -948,20 +1018,27 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
                                               T0=total_temp_inj,
                                               gamma=gamma_inj)
 
-    rho_injection = pres_injection/temp_injection/r
-    vel_injection[0] = -inj_mach*math.sqrt(gamma*pres_injection/rho_injection)
+    if nspecies < 3:
+        rho_injection = pres_injection/temp_injection/r
+        sos = math.sqrt(gamma*pres_injection/rho_injection)
+    else:
+        cantera_soln.TPY = temp_injection, pres_injection, y_fuel
+        rho_injection = cantera_soln.density
+        gamma_loc = cantera_soln.cp_mass/cantera_soln.cv_mass
+        sos = math.sqrt(gamma_loc*pres_injection/rho_injection)
+        if rank == 0:
+            print(f"injection gamma guess {gamma_inj} cantera gamma {gamma_loc}")
+
+    vel_injection[0] = -inj_mach*sos
 
     if rank == 0:
+        print("")
+        print(f"\tinjector Mach number {inj_mach}")
         print(f"\tinjector temperature {temp_injection}")
         print(f"\tinjector pressure {pres_injection}")
         print(f"\tinjector rho {rho_injection}")
         print(f"\tinjector velocity {vel_injection[0]}")
-
-    if rank == 0:
         print("#### Simluation initialization data: ####\n")
-
-    eos = IdealSingleGas(gamma=gamma, gas_const=r)
-    gas_model = GasModel(eos=eos, transport=transport_model)
 
     # read geometry files
     geometry_bottom = None
@@ -990,7 +1067,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
                           P0=total_pres_inflow, T0=total_temp_inflow,
                           temp_wall=temp_wall, temp_sigma=temp_sigma,
                           vel_sigma=vel_sigma, nspecies=nspecies,
-                          mass_frac=y, gamma_guess=gamma,
+                          mass_frac=y, gamma_guess=gamma, inj_gamma_guess=gamma_inj,
                           inj_pres=total_pres_inj,
                           inj_temp=total_temp_inj,
                           inj_vel=vel_injection, inj_mass_frac=y_fuel,
@@ -1022,7 +1099,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
 
     current_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
                            eos=eos, time=0)
-    current_state = make_fluid_state(current_cv, gas_model)
+    current_state = make_fluid_state(current_cv, gas_model, init_temperature)
 
     visualizer = make_visualizer(discr)
 
@@ -1041,11 +1118,12 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         write_visfile(discr, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
-    def my_write_restart(step, t, cv):
+    def my_write_restart(step, t, cv, temperature_seed):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
         restart_data = {
             "local_mesh": local_mesh,
             "cv": cv,
+            "temperature_seed": temperature_seed,
             "t": t,
             "step": step,
             "order": order,
@@ -1056,7 +1134,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
 
     # write visualization and restart data
     my_write_viz(step=0, t=0, cv=current_state.cv, dv=current_state.dv)
-    my_write_restart(step=0, t=0, cv=current_state.cv)
+    my_write_restart(step=0, t=0, cv=current_state.cv,
+                     temperature_seed=current_state.dv.temperature)
 
 
 if __name__ == "__main__":
@@ -1085,7 +1164,7 @@ if __name__ == "__main__":
         print(f"Default casename {casename}")
 
     if args.lazy:
-        actx_class = MPIPytatoPyOpenCLArrayContext
+        actx_class = MPISingleGridWorkBalancingPytatoArrayContext
     else:
         actx_class = PyOpenCLArrayContext
 

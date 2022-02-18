@@ -37,7 +37,7 @@ import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
 from functools import partial
 
-from grudge.array_context import (MPIPytatoPyOpenCLArrayContext,
+from grudge.array_context import (MPISingleGridWorkBalancingPytatoArrayContext,
                                   PyOpenCLArrayContext)
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from arraycontext import thaw, freeze
