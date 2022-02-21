@@ -940,8 +940,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         y_fuel[i_c2h4] = mf_c2h4
         y_fuel[i_h2] = mf_h2
 
-        one_atm = cantera.one_atm
-        cantera_soln.TPY = init_temperature, one_atm, y
+        cantera_soln.TPY = init_temperature, 101325, y
 
     # make the eos
     if nspecies < 3:
