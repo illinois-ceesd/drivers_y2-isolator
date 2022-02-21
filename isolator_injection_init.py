@@ -910,7 +910,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     inlet_area_ratio = inlet_height/throat_height
     outlet_area_ratio = outlet_height/throat_height
 
-    # 2 tracking scalars, either fuel or not-fuel
+    # initialize eos and species mass fractions
     y = np.zeros(nspecies)
     y_fuel = np.zeros(nspecies)
     if nspecies == 2:
@@ -1132,6 +1132,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
             "local_mesh": local_mesh,
             "cv": cv,
             "temperature_seed": temperature_seed,
+            "nspecies": nspecies,
             "t": t,
             "step": step,
             "order": order,

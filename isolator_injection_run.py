@@ -36,6 +36,7 @@ import pyopencl as cl
 import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
 from functools import partial
+from pytools.obj_array import make_obj_array
 
 from grudge.array_context import (MPISingleGridWorkBalancingPytatoArrayContext,
                                   PyOpenCLArrayContext)
@@ -45,13 +46,12 @@ from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import DTAG_BOUNDARY
-from grudge.op import nodal_max, nodal_min
+#from grudge.op import nodal_max, nodal_min
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
     logmgr_set_time,
-    LogUserQuantity,
     set_sim_state
 )
 
@@ -72,14 +72,13 @@ import pyopencl.tools as cl_tools
 from mirgecom.integrators import (rk4_step, lsrk54_step, lsrk144_step,
                                   euler_step)
 
-#from mirgecom.fluid import make_conserved
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedFluidBoundary,
     IsothermalNoSlipBoundary,
 )
-#from mirgecom.initializers import (Uniform, PlanarDiscontinuity)
-from mirgecom.eos import IdealSingleGas
+import cantera
+from mirgecom.eos import IdealSingleGas, PyrometheusMixture
 from mirgecom.transport import SimpleTransport
 from mirgecom.gas_model import GasModel, make_fluid_state
 
@@ -211,7 +210,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
-    if actx_class == MPIPytatoPyOpenCLArrayContext:
+    if actx_class == MPISingleGridWorkBalancingPytatoArrayContext:
         actx = actx_class(comm, queue, mpi_base_tag=14000,
             allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
     else:
@@ -237,6 +236,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     # default health status bounds
     health_pres_min = 1.0e-1
     health_pres_max = 2.0e6
+    health_temp_min = 1.0
+    health_temp_max = 4000
+    health_mass_frac_min = -10
+    health_mass_frac_max = 10
 
     # discretization and model control
     order = 1
@@ -248,6 +251,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     # material properties
     mu = 1.0e-5
     mu_override = False  # optionally read in from input
+    nspecies = 0
 
     if user_input_file:
         input_data = None
@@ -297,6 +301,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         except KeyError:
             pass
         try:
+            nspecies = int(input_data["nspecies"])
+        except KeyError:
+            pass
+        try:
             order = int(input_data["order"])
         except KeyError:
             pass
@@ -314,6 +322,22 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             pass
         try:
             health_pres_max = float(input_data["health_pres_max"])
+        except KeyError:
+            pass
+        try:
+            health_temp_min = float(input_data["health_temp_min"])
+        except KeyError:
+            pass
+        try:
+            health_temp_max = float(input_data["health_temp_max"])
+        except KeyError:
+            pass
+        try:
+            health_mass_frac_min = float(input_data["health_mass_frac_min"])
+        except KeyError:
+            pass
+        try:
+            health_mass_frac_max = float(input_data["health_mass_frac_max"])
         except KeyError:
             pass
 
@@ -367,7 +391,6 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     r = 8314.59/mw
     cp = r*gamma/(gamma - 1)
     Pr = 0.75
-    nspecies = 2
 
     if mu_override:
         mu = mu_input
@@ -375,22 +398,50 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         mu = mu_mix
 
     kappa = cp*mu/Pr
+    init_temperature = 300.0
 
     if rank == 0:
         print("\n#### Simluation material properties: ####")
         print(f"\tmu = {mu}")
         print(f"\tkappa = {kappa}")
         print(f"\tPrandtl Number  = {Pr}")
-
-    # 2 tracking scalars, either fuel or not-fuel
-    species_names = ["air", "fuel"]
+        print(f"\tnspecies = {nspecies}")
+        if nspecies == 0:
+            print("\tno passive scalars, uniform ideal gas eos")
+        elif nspecies == 2:
+            print("\tpassive scalars to track air/fuel mixture, ideal gas eos")
+        else:
+            print("\tfull multi-species initialization with pyrometheus eos")
 
     #spec_diffusivity = 0. * np.ones(nspecies)
     spec_diffusivity = 1e-4 * np.ones(nspecies)
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
                                       species_diffusivity=spec_diffusivity)
 
-    eos = IdealSingleGas(gamma=gamma, gas_const=r)
+    # initialize eos and species mass fractions
+    if nspecies == 2:
+        species_names = ["air", "fuel"]
+    elif nspecies > 2:
+        from mirgecom.mechanisms import get_mechanism_cti
+        mech_cti = get_mechanism_cti("uiuc")
+
+        cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
+        cantera_nspecies = cantera_soln.n_species
+        if nspecies != cantera_nspecies:
+            if rank == 0:
+                print(f"specified {nspecies=}, but cantera mechanism"
+                      f" needs nspecies={cantera_nspecies}")
+            raise RuntimeError()
+
+    # make the eos
+    if nspecies < 3:
+        eos = IdealSingleGas(gamma=gamma, gas_const=r)
+    else:
+        from mirgecom.thermochemistry import make_pyrometheus_mechanism_class
+        pyro_mech = make_pyrometheus_mechanism_class(cantera_soln)(actx.np)
+        eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
+        species_names = pyro_mech.species_names
+
     gas_model = GasModel(eos=eos, transport=transport_model)
 
     viz_path = "viz_data/"
@@ -410,8 +461,11 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         local_nelements = local_mesh.nelements
         global_nelements = restart_data["global_nelements"]
         restart_order = int(restart_data["order"])
+        # will use this later
+        #restart_nspecies = int(restart_data["nspecies"])
 
         assert restart_data["num_parts"] == nparts
+        assert restart_data["nspecies"] == nspecies
     else:
         error_message = "Driver only supports restart. Start with -r <filename>"
         raise RuntimeError(error_message)
@@ -467,10 +521,17 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if rank == 0:
         logging.info("Before restart/init")
 
+    def get_fluid_state(cv, temperature_seed):
+        return make_fluid_state(cv=cv, gas_model=gas_model,
+                                temperature_seed=temperature_seed)
+
+    create_fluid_state = actx.compile(get_fluid_state)
+
     if restart_filename:
         if rank == 0:
             logging.info("Restarting soln.")
         restart_cv = restart_data["cv"]
+        temperature_seed = restart_data["temperature_seed"]
         if restart_order != order:
             restart_discr = EagerDGDiscretization(
                 actx,
@@ -484,13 +545,16 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                 restart_discr.discr_from_dd("vol")
             )
             restart_cv = connection(restart_data["cv"])
+            temperature_seed = connection(restart_data["temperature_seed"])
+
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
     else:
         error_message = "Driver only supports restart. Start with -r <filename>"
         raise RuntimeError(error_message)
 
-    current_state = make_fluid_state(restart_cv, gas_model)
+    current_state = create_fluid_state(restart_cv, temperature_seed)
+    temperature_seed = current_state.temperature
 
     # initialize the sponge field
     sponge_thickness = 0.09
@@ -552,7 +616,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         from grudge.op import nodal_max
         return actx.to_numpy(nodal_max(discr, "vol", x))[()]
 
-    def my_write_status(dt, cfl, dv):
+    def my_write_status(cv, dv, dt, cfl):
         status_msg = f"-------- dt = {dt:1.3e}, cfl = {cfl:1.4f}"
         temperature = thaw(freeze(dv.temperature, actx), actx)
         pressure = thaw(freeze(dv.pressure, actx), actx)
@@ -561,10 +625,20 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         t_min = vol_min(temperature)
         t_max = vol_max(temperature)
 
+        from pytools.obj_array import obj_array_vectorize
+        y_min = obj_array_vectorize(lambda x: vol_min(x),
+                                      cv.species_mass_fractions)
+        y_max = obj_array_vectorize(lambda x: vol_max(x),
+                                      cv.species_mass_fractions)
+
         dv_status_msg = (
             f"\n-------- P (min, max) (Pa) = ({p_min:1.9e}, {p_max:1.9e})")
         dv_status_msg += (
             f"\n-------- T (min, max) (K)  = ({t_min:7g}, {t_max:7g})")
+        for i in range(nspecies):
+            dv_status_msg += (
+                f"\n-------- y_{species_names[i]} (min, max) = "
+                f"({y_min[i]:1.3e}, {y_max[i]:1.3e})")
         status_msg += dv_status_msg
         status_msg += "\n"
 
@@ -592,12 +666,14 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         write_visfile(discr, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
-    def my_write_restart(step, t, cv):
+    def my_write_restart(step, t, cv, temperature_seed):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
         if restart_fname != restart_filename:
             restart_data = {
                 "local_mesh": local_mesh,
                 "cv": cv,
+                "temperature_seed": temperature_seed,
+                "nspecies": nspecies,
                 "t": t,
                 "step": step,
                 "order": order,
@@ -606,7 +682,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             }
             write_restart_file(actx, restart_data, restart_fname, comm)
 
-    def my_health_check(dv):
+    def my_health_check(cv, dv):
         health_error = False
         if check_naninf_local(discr, "vol", dv.pressure):
             health_error = True
@@ -619,6 +695,25 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             p_min = vol_min(dv.pressure)
             p_max = vol_max(dv.pressure)
             logger.info(f"Pressure range violation ({p_min=}, {p_max=})")
+
+        if global_reduce(check_range_local(discr, "vol", dv.temperature,
+                                     health_temp_min, health_temp_max),
+                                     op="lor"):
+            health_error = True
+            t_min = vol_min(dv.temperature)
+            t_max = vol_max(dv.temperature)
+            logger.info(f"Temperature range violation ({t_min=}, {t_max=})")
+
+        for i in range(nspecies):
+            if global_reduce(check_range_local(discr, "vol",
+                                               cv.species_mass_fractions[i],
+                                         health_mass_frac_min, health_mass_frac_max),
+                                         op="lor"):
+                health_error = True
+                y_min = vol_min(cv.species_mass_fractions[i])
+                y_max = vol_max(cv.species_mass_fractions[i])
+                logger.info(f"Species mass fraction range violation. "
+                            f"{species_names[i]}: ({y_min=}, {y_max=})")
 
         return health_error
 
@@ -647,14 +742,16 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         d_alpha_max = 0
 
         if state.is_viscous:
-            from mirgecom.viscous import get_local_max_species_diffusivity
             mu = state.viscosity
             # this appears to break lazy for whatever reason
-            #d_alpha_max = \
-                #get_local_max_species_diffusivity(
-                    #state.array_context,
-                    #state.species_diffusivity
-                #)
+            """
+            from mirgecom.viscous import get_local_max_species_diffusivity
+            d_alpha_max = \
+                get_local_max_species_diffusivity(
+                    state.array_context,
+                    state.species_diffusivity
+                )
+             """
 
         return(
             length_scales / (state.wavespeed
@@ -715,12 +812,11 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         return alpha_field
 
     def my_pre_step(step, t, dt, state):
-        fluid_state = make_fluid_state(cv=state, gas_model=gas_model)
-        cv = fluid_state.cv
+        cv, tseed = state
+        fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
         dv = fluid_state.dv
 
         try:
-
             if logmgr:
                 logmgr.tick_before()
 
@@ -733,17 +829,17 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             do_status = check_step(step=step, interval=nstatus)
 
             if do_health:
-                health_errors = global_reduce(my_health_check(dv), op="lor")
+                health_errors = global_reduce(my_health_check(cv, dv), op="lor")
                 if health_errors:
                     if rank == 0:
                         logger.warning("Fluid solution failed health check.")
                     raise MyRuntimeError("Failed simulation health check.")
 
             if do_status:
-                my_write_status(dt=dt, cfl=cfl, dv=dv)
+                my_write_status(dt=dt, cfl=cfl, dv=dv, cv=cv)
 
             if do_restart:
-                my_write_restart(step=step, t=t, cv=cv)
+                my_write_restart(step=step, t=t, cv=cv, temperature_seed=tseed)
 
             if do_viz:
                 my_write_viz(step=step, t=t, cv=cv, dv=dv,
@@ -754,27 +850,28 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                 logger.error("Errors detected; attempting graceful exit.")
             my_write_viz(step=step, t=t, cv=cv, dv=dv, ts_field=ts_field,
                          alpha_field=alpha_field)
-            my_write_restart(step=step, t=t, cv=cv)
+            my_write_restart(step=step, t=t, cv=cv, temperature_seed=tseed)
             raise
-
-        dt = get_sim_timestep(discr, fluid_state, t, dt, current_cfl, t_final,
-                              constant_cfl)
 
         return state, dt
 
     def my_post_step(step, t, dt, state):
+        cv, tseed = state
+        fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
         # Logmgr needs to know about EOS, dt, dim?
         # imo this is a design/scope flaw
         if logmgr:
             set_dt(logmgr, dt)
-            set_sim_state(logmgr, dim, state, eos)
+            set_sim_state(logmgr, dim, cv, gas_model.eos)
             logmgr.tick_after()
-        return state, dt
+        return make_obj_array([fluid_state.cv, fluid_state.temperature]), dt
 
-    def my_rhs(t, state):
-        fluid_state = make_fluid_state(cv=state, gas_model=gas_model)
+    def my_rhs_without_combustion(t, state):
+        cv, tseed = state
+        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                       temperature_seed=tseed)
         alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
-        return (
+        cv_rhs = (
             ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
                         gas_model=gas_model, quadrature_tag=quadrature_tag)
             + av_laplacian_operator(discr, fluid_state=fluid_state,
@@ -785,18 +882,44 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                                     quadrature_tag=quadrature_tag)
             + sponge(cv=fluid_state.cv, cv_ref=restart_cv, sigma=sponge_sigma)
         )
+        return make_obj_array([cv_rhs, 0*tseed])
+
+    def my_rhs_with_combustion(t, state):
+        cv, tseed = state
+        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                       temperature_seed=tseed)
+        alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+        cv_rhs = (
+            ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
+                        gas_model=gas_model, quadrature_tag=quadrature_tag)
+            + eos.get_species_source_terms(cv,
+                                           temperature=fluid_state.temperature)
+            + av_laplacian_operator(discr, fluid_state=fluid_state,
+                                    boundaries=boundaries,
+                                    boundary_kwargs={"time": t,
+                                                     "gas_model": gas_model},
+                                    alpha=alpha_field, s0=s0_sc, kappa=kappa_sc,
+                                    quadrature_tag=quadrature_tag)
+            + sponge(cv=fluid_state.cv, cv_ref=restart_cv, sigma=sponge_sigma)
+        )
+        return make_obj_array([cv_rhs, 0*tseed])
 
     current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
                                   current_cfl, t_final, constant_cfl)
 
-    current_step, current_t, current_cv = \
+    my_rhs = my_rhs_without_combustion
+    if nspecies > 2:
+        my_rhs = my_rhs_with_combustion
+
+    current_step, current_t, stepper_state = \
         advance_state(rhs=my_rhs, timestepper=timestepper,
                       pre_step_callback=my_pre_step,
                       post_step_callback=my_post_step,
                       istep=current_step, dt=current_dt,
                       t=current_t, t_final=t_final,
-                      state=current_state.cv)
-    current_state = make_fluid_state(current_cv, gas_model)
+                      state=make_obj_array([current_state.cv, temperature_seed]))
+    current_cv, tseed = stepper_state
+    current_state = make_fluid_state(current_cv, gas_model, tseed)
 
     # Dump the final data
     if rank == 0:
@@ -805,11 +928,12 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     alpha_field = my_get_alpha(discr, current_state, alpha_sc)
     ts_field, cfl, dt = my_get_timestep(t=current_t, dt=current_dt,
                                         state=current_state, alpha=alpha_field)
-    my_write_status(dt=dt, cfl=cfl, dv=final_dv)
+    my_write_status(dt=dt, cfl=cfl, cv=current_state.cv, dv=final_dv)
 
     my_write_viz(step=current_step, t=current_t, cv=current_state.cv, dv=final_dv,
                  ts_field=ts_field, alpha_field=alpha_field)
-    my_write_restart(step=current_step, t=current_t, cv=current_state.cv)
+    my_write_restart(step=current_step, t=current_t, cv=current_state.cv,
+                     temperature_seed=tseed)
 
     if logmgr:
         logmgr.close()
@@ -859,7 +983,7 @@ if __name__ == "__main__":
         actx_class = PyOpenCLProfilingArrayContext
     else:
         if args.lazy:
-            actx_class = MPIPytatoPyOpenCLArrayContext
+            actx_class = MPISingleGridWorkBalancingPytatoArrayContext
         else:
             actx_class = PyOpenCLArrayContext
 
