@@ -54,7 +54,7 @@ from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
     logmgr_set_time,
-    set_sim_state
+    set_sim_state, logmgr_add_device_memory_usage
 )
 
 from mirgecom.navierstokes import ns_operator
@@ -1122,6 +1122,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
+        logmgr_add_device_memory_usage(logmgr, queue)
 
         logmgr.add_watches([
             ("step.max", "step = {value}, "),
