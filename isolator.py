@@ -1492,7 +1492,7 @@ if __name__ == "__main__":
         casename = args.casename.replace("'", "")
     else:
         print(f"Default casename {casename}")
-    lazy = args.layz
+    lazy = args.lazy
     if args.profile:
         if lazy:
             raise ValueError("Can't use lazy and profiling together.")
