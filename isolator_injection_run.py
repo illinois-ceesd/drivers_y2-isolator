@@ -38,9 +38,6 @@ import pyopencl.array as cla  # noqa
 from functools import partial
 from pytools.obj_array import make_obj_array
 
-from grudge.array_context import (MPISingleGridWorkBalancingPytatoArrayContext,
-                                  PyOpenCLArrayContext)
-from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from arraycontext import thaw, freeze
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
@@ -164,8 +161,11 @@ class InitSponge:
 @mpi_entry_point
 def main(ctx_factory=cl.create_some_context, restart_filename=None,
          use_profiling=False, use_logmgr=True, user_input_file=None,
-         use_overintegration=False,
-         actx_class=PyOpenCLArrayContext, casename=None):
+         use_overintegration=False, actx_class=False, casename=None,
+         lazy=False):
+
+    if actx_class is None:
+        raise RuntimeError("Array context class missing.")
 
     # control log messages
     logger = logging.getLogger(__name__)
@@ -210,13 +210,12 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
-    if actx_class == MPISingleGridWorkBalancingPytatoArrayContext:
-        actx = actx_class(comm, queue, mpi_base_tag=14000,
-            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+    if lazy:
+        actx = actx_class(comm, queue, mpi_base_tag=12000)
     else:
-        actx = actx_class(
-            queue,
-            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+        actx = actx_class(comm, queue,
+                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
+                force_device_scalars=True)
 
     # default i/o junk frequencies
     nviz = 500
@@ -250,6 +249,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     # material properties
     mu = 1.0e-5
+    spec_diff = 1e-4
     mu_override = False  # optionally read in from input
     nspecies = 0
 
@@ -298,6 +298,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         try:
             mu_input = float(input_data["mu"])
             mu_override = True
+        except KeyError:
+            pass
+        try:
+            spec_diff = float(input_data["spec_diff"])
         except KeyError:
             pass
         try:
@@ -406,6 +410,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         print(f"\tkappa = {kappa}")
         print(f"\tPrandtl Number  = {Pr}")
         print(f"\tnspecies = {nspecies}")
+        print(f"\tspecies diffusivity = {spec_diff}")
         if nspecies == 0:
             print("\tno passive scalars, uniform ideal gas eos")
         elif nspecies == 2:
@@ -414,7 +419,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             print("\tfull multi-species initialization with pyrometheus eos")
 
     #spec_diffusivity = 0. * np.ones(nspecies)
-    spec_diffusivity = 1e-4 * np.ones(nspecies)
+    spec_diffusivity = spec_diff * np.ones(nspecies)
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
                                       species_diffusivity=spec_diffusivity)
 
@@ -652,9 +657,6 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
                             dv.speed_of_sound)
 
-        from grudge.dt_utils import characteristic_lengthscales
-        length_scales = characteristic_lengthscales(cv.array_context, discr)
-
         viz_fields = [("cv", cv),
                       ("dv", dv),
                       ("mach", mach),
@@ -662,7 +664,6 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                       ("sponge_sigma", sponge_sigma),
                       ("alpha", alpha_field),
                       ("tagged_cells", tagged_cells),
-                      ("cl", length_scales),
                       ("dt" if constant_cfl else "cfl", ts_field)]
         # species mass fractions
         viz_fields.extend(
@@ -743,11 +744,11 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
         length_scales = characteristic_lengthscales(state.array_context, discr)
 
-        mu = 0
+        nu = 0
         d_alpha_max = 0
 
         if state.is_viscous:
-            mu = state.viscosity
+            nu = state.viscosity/state.mass_density
             # this appears to break lazy for whatever reason
             from mirgecom.viscous import get_local_max_species_diffusivity
             d_alpha_max = \
@@ -758,7 +759,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
         return(
             length_scales / (state.wavespeed
-            + ((mu + d_alpha_max + alpha) / length_scales))
+            + ((nu + d_alpha_max + alpha) / length_scales))
         )
 
     def my_get_viscous_cfl(discr, dt, state, alpha):
@@ -981,15 +982,13 @@ if __name__ == "__main__":
     else:
         print(f"Default casename {casename}")
 
+    lazy = args.lazy
     if args.profile:
-        if args.lazy:
+        if lazy:
             raise ValueError("Can't use lazy and profiling together.")
-        actx_class = PyOpenCLProfilingArrayContext
-    else:
-        if args.lazy:
-            actx_class = MPISingleGridWorkBalancingPytatoArrayContext
-        else:
-            actx_class = PyOpenCLArrayContext
+
+    from grudge.array_context import get_reasonable_array_context_class
+    actx_class = get_reasonable_array_context_class(lazy=lazy, distributed=True)
 
     restart_filename = None
     if args.restart_file:
@@ -1006,7 +1005,7 @@ if __name__ == "__main__":
     print(f"Running {sys.argv[0]}\n")
     main(restart_filename=restart_filename, user_input_file=input_file,
          use_profiling=args.profile, use_logmgr=args.log,
-         use_overintegration=args.overintegration,
+         use_overintegration=args.overintegration, lazy=lazy,
          actx_class=actx_class, casename=casename)
 
 # vim: foldmethod=marker
