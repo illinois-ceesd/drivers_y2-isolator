@@ -739,7 +739,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         log_dir = os.path.dirname(logname)
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir)
-    comm.barrier()
+    comm.Barrier()
 
     logmgr = initialize_logmgr(use_logmgr,
         filename=logname, mode="wo", mpi_comm=comm)
