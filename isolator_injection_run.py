@@ -765,46 +765,62 @@ def main(ctx_factory=cl.create_some_context,
     from mirgecom.gas_model import project_fluid_state
     from grudge.dof_desc import DOFDesc, as_dofdesc
     dd_base_vol = DOFDesc("vol")
-    inflow_btag = DTAG_BOUNDARY("inflow")
-    inflow_ref_state = project_fluid_state(
-        discr, dd_base_vol,
-        as_dofdesc(inflow_btag).with_discr_tag(quadrature_tag),
-        target_state, gas_model
-    )
 
-    outflow_btag = DTAG_BOUNDARY("outflow")
-    outflow_ref_state = project_fluid_state(
-        discr, dd_base_vol, as_dofdesc(outflow_btag).with_discr_tag(quadrature_tag),
-        target_state, gas_model
-    )
+    # inflow_btag = DTAG_BOUNDARY("inflow")
+    # inflow_ref_state = project_fluid_state(
+    #     discr, dd_base_vol,
+    #     as_dofdesc(inflow_btag).with_discr_tag(quadrature_tag),
+    #     target_state, gas_model
+    # )
 
-    injection_btag = DTAG_BOUNDARY("injection")
-    injection_ref_state = project_fluid_state(
+    # outflow_btag = DTAG_BOUNDARY("outflow")
+    # outflow_ref_state = project_fluid_state(
+    #     discr, dd_base_vol,
+    #     as_dofdesc(outflow_btag).with_discr_tag(quadrature_tag),
+    #     target_state, gas_model
+    # )
+
+    # injection_btag = DTAG_BOUNDARY("injection")
+    # injection_ref_state = project_fluid_state(
+    #     discr, dd_base_vol,
+    #     as_dofdesc(injection_btag).with_discr_tag(quadrature_tag),
+    #     target_state, gas_model
+    # )
+    flow_boundary_btag = DTAG_BOUNDARY("flow")
+    flow_ref_state = project_fluid_state(
         discr, dd_base_vol,
-        as_dofdesc(injection_btag).with_discr_tag(quadrature_tag),
+        as_dofdesc(flow_boundary_btag).with_discr_tag(quadrature_tag),
         target_state, gas_model
     )
 
     # Set boundary conditions
-    def _injection_state_func(**kwargs):
-        return injection_ref_state
+    def _target_flow_state_func(**kwargs):
+        return flow_ref_state
 
-    def _inflow_state_func(**kwargs):
-        return inflow_ref_state
+    # def _injection_state_func(**kwargs):
+    #     return injection_ref_state
 
-    def _outflow_state_func(**kwargs):
-        return outflow_ref_state
+    # def _inflow_state_func(**kwargs):
+    #     return inflow_ref_state
+
+    # def _outflow_state_func(**kwargs):
+    #     return outflow_ref_state
 
     wall = IsothermalWallBoundary()
 
     if use_boundaries:
+        # boundaries = {
+        #    DTAG_BOUNDARY("inflow"):
+        #    PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
+        #    DTAG_BOUNDARY("outflow"):
+        #    PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
+        #    DTAG_BOUNDARY("injection"):
+        #    PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
+        #    DTAG_BOUNDARY("wall"): wall
+        # }
         boundaries = {
-            DTAG_BOUNDARY("inflow"):
-            PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
-            DTAG_BOUNDARY("outflow"):
-            PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
-            DTAG_BOUNDARY("injection"):
-            PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
+            DTAG_BOUNDARY("flow"):
+            PrescribedFluidBoundary(boundary_state_func=_target_flow_state_func),
             DTAG_BOUNDARY("wall"): wall
         }
     else:
@@ -1034,7 +1050,7 @@ def main(ctx_factory=cl.create_some_context,
 
     sc_scale = get_sc_scale()
 
-    def my_get_alpha(discr, state, alpha):
+    def my_get_alpha(state, alpha):
         """Scale alpha by the element characteristic length."""
         return alpha*state.speed*length_scales
 
