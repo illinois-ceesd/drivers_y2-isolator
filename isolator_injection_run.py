@@ -1,9 +1,4 @@
-"""mirgecom driver for the Y0 demonstration.
-
-Note: this example requires a *scaled* version of the Y0
-grid. A working grid example is located here:
-github.com:/illinois-ceesd/data@y0scaled
-"""
+"""Simulation driver for the Y2 Isolator case."""
 
 __copyright__ = """
 Copyright (C) 2020 University of Illinois Board of Trustees
@@ -81,11 +76,15 @@ from mirgecom.fluid import make_conserved
 
 
 class SingleLevelFilter(logging.Filter):
+    """Filter I/O."""
+
     def __init__(self, passlevel, reject):
+        """Initialize the I/O filter."""
         self.passlevel = passlevel
         self.reject = reject
 
     def filter(self, record):
+        """Filter it."""
         if self.reject:
             return (record.levelno != self.passlevel)
         else:
@@ -98,68 +97,8 @@ class MyRuntimeError(RuntimeError):
     pass
 
 
-#from pyro_mechs.uiuc import Thermochemistry
-from uiuc import Thermochemistry
-
-
-class PyroWrapper(Thermochemistry):
-
-    # This bit disallows negative concentrations and instead
-    # pins them to 0. mass_fractions can sometimes be slightly
-    # negative and that's ok.
-    def get_concentrations(self, rho, mass_fractions):
-        concs = self.iwts * rho * mass_fractions
-        # ensure non-negative concentrations
-        zero = self._pyro_zeros_like(concs[0])
-        for i in range(self.num_species):
-            concs[i] = self.usr_np.where(self.usr_np.less(concs[i], 0),
-                                         zero, concs[i])
-        return concs
-
-    # This is the temperature update for *get_temperature*.  Having this
-    # separated out allows it to be used in the fluid drivers for evaluating
-    # convergence of the temperature calculation.
-    def get_temperature_update_energy(self, e_in, t_in, y):
-        pv_func = self.get_mixture_specific_heat_cv_mass
-        he_func = self.get_mixture_internal_energy_mass
-        return (e_in - he_func(t_in, y)) / pv_func(t_in, y)
-
-    # This hard-codes the number of Newton iterations because the convergence
-    # check is not compatible with lazy evaluation. Instead, we plan to check
-    # the temperature residual at simulation health checking time.
-    # FIXME: Occasional convergence check is other-than-ideal; revisit asap.
-    # - could adapt dt or num_iter on temperature convergence?
-    # - can pass-in num_iter?
-    def get_temperature(self, energy, temperature_guess, species_mass_fractions):
-        """Compute the temperature of the mixture from thermal energy.
-
-        Parameters
-        ----------
-        energy: :class:`~meshmode.dof_array.DOFArray`
-            The internal (thermal) energy of the mixture.
-        temperature_guess: :class:`~meshmode.dof_array.DOFArray`
-            An initial starting temperature for the Newton iterations.
-        species_mass_fractions: numpy.ndarray
-            An object array of :class:`~meshmode.dof_array.DOFArray` with the
-            mass fractions of the mixture species.
-
-        Returns
-        -------
-        :class:`~meshmode.dof_array.DOFArray`
-            The mixture temperature after a fixed number of Newton iterations.
-        """
-        temperature_niter = 5
-        num_iter = temperature_niter
-        t_i = temperature_guess
-        for _ in range(num_iter):
-            t_i = t_i + self.get_temperature_update_energy(
-                energy, t_i, species_mass_fractions
-            )
-        return t_i
-
-
 class SparkSource:
-    r"""Energy deposition from a ignition source"
+    r"""Deposit energy from a ignition source.
 
     Internal energy is deposited as a gaussian  of the form:
 
@@ -170,6 +109,7 @@ class SparkSource:
     .. automethod:: __init__
     .. automethod:: __call__
     """
+
     def __init__(self, *, dim, center=None, width=1.0,
                  amplitude=0., amplitude_func=None):
         r"""Initialize the sponge parameters.
@@ -183,7 +123,6 @@ class SparkSource:
         amplitude_fun: function
             variation of amplitude with time
         """
-
         if center is None:
             center = np.zeros(shape=(dim,))
         self._center = center
@@ -208,7 +147,6 @@ class SparkSource:
         x_vec: numpy.ndarray
             Nodal coordinates
         """
-
         t = time
         if self._amplitude_func is not None:
             amplitude = self._amplitude*self._amplitude_func(t)
@@ -238,24 +176,17 @@ class SparkSource:
 
 
 def sponge_source(cv, cv_ref, sigma):
+    """Create sponge source."""
     return sigma*(cv_ref - cv)
 
 
 class InitSponge:
-    r"""Solution initializer for flow in the ACT-II facility
-
-    This initializer creates a physics-consistent flow solution
-    given the top and bottom geometry profiles and an EOS using isentropic
-    flow relations.
-
-    The flow is initialized from the inlet stagnations pressure, P0, and
-    stagnation temperature T0.
-
-    geometry locations are linearly interpolated between given data points
+    r"""Initialize sponge.
 
     .. automethod:: __init__
     .. automethod:: __call__
     """
+
     def __init__(self, *, x0, thickness, amplitude):
         r"""Initialize the sponge parameters.
 
@@ -268,7 +199,6 @@ class InitSponge:
         amplitude: float
             sponge strength modifier
         """
-
         self._x0 = x0
         self._thickness = thickness
         self._amplitude = amplitude
@@ -303,7 +233,7 @@ def main(ctx_factory=cl.create_some_context,
          use_profiling=False, use_logmgr=True, user_input_file=None,
          use_overintegration=False, actx_class=False, casename=None,
          lazy=False):
-
+    """Drive the isolator case."""
     if actx_class is None:
         raise RuntimeError("Array context class missing.")
 
@@ -612,9 +542,10 @@ def main(ctx_factory=cl.create_some_context,
         eos = IdealSingleGas(gamma=gamma, gas_const=r)
         species_names = ["air", "fuel"]
     else:
-        #from mirgecom.thermochemistry import make_pyrometheus_mechanism_class
-        #pyro_mech = make_pyrometheus_mechanism_class(cantera_soln)(actx.np)
-        pyro_mech = PyroWrapper(actx.np)
+        from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
+        from mirgecom.mechanisms.uiuc import Thermochemistry
+        pyro_mech = \
+            get_pyrometheus_wrapper_class(Thermochemistry)(actx.np)
         eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
         species_names = pyro_mech.species_names
 
@@ -797,26 +728,51 @@ def main(ctx_factory=cl.create_some_context,
     x_vec = thaw(discr.nodes(), actx)
     sponge_sigma = sponge_init(x_vec=x_vec)
 
-    # set the boundary conditions
-    def _ref_state_func(discr, btag, gas_model, ref_state, **kwargs):
-        from mirgecom.gas_model import project_fluid_state
-        from grudge.dof_desc import DOFDesc, as_dofdesc
-        dd_base_vol = DOFDesc("vol")
-        return project_fluid_state(discr, dd_base_vol,
-                                   as_dofdesc(btag).with_discr_tag(quadrature_tag),
-                                   ref_state, gas_model)
+    from mirgecom.gas_model import project_fluid_state
+    from grudge.dof_desc import DOFDesc, as_dofdesc
+    dd_base_vol = DOFDesc("vol")
+    inflow_btag = DTAG_BOUNDARY("inflow")
+    inflow_ref_state = project_fluid_state(
+        discr, dd_base_vol,
+        as_dofdesc(inflow_btag).with_discr_tag(quadrature_tag),
+        target_state, gas_model
+    )
 
-    _ref_boundary_state_func = partial(_ref_state_func, ref_state=target_state)
+    outflow_btag = DTAG_BOUNDARY("outflow")
+    outflow_ref_state = project_fluid_state(
+        discr, dd_base_vol, as_dofdesc(outflow_btag).with_discr_tag(quadrature_tag),
+        target_state, gas_model
+    )
 
-    ref_state = PrescribedFluidBoundary(boundary_state_func=_ref_boundary_state_func)
+    injection_btag = DTAG_BOUNDARY("injection")
+    injection_ref_state = project_fluid_state(
+        discr, dd_base_vol,
+        as_dofdesc(injection_btag).with_discr_tag(quadrature_tag),
+        target_state, gas_model
+    )
+
+    # Set boundary conditions
+    def _injection_state_func(**kwargs):
+        return injection_ref_state
+
+    def _inflow_state_func(**kwargs):
+        return inflow_ref_state
+
+    def _outflow_state_func(**kwargs):
+        return outflow_ref_state
+
     wall = IsothermalWallBoundary()
 
     boundaries = {
-        DTAG_BOUNDARY("inflow"): ref_state,
-        DTAG_BOUNDARY("outflow"): ref_state,
-        DTAG_BOUNDARY("injection"): ref_state,
+        DTAG_BOUNDARY("inflow"):
+        PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
+        DTAG_BOUNDARY("outflow"):
+        PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
+        DTAG_BOUNDARY("injection"):
+        PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
         DTAG_BOUNDARY("wall"): wall
     }
+
     #from mirgecom.simutil import boundary_report
     #boundary_report(discr, boundaries, f"{casename}_boundaries_np{nparts}.yaml")
 
@@ -1032,7 +988,7 @@ def main(ctx_factory=cl.create_some_context,
         return ts_field, cfl, min(t_remaining, dt)
 
     def my_get_alpha(discr, state, alpha):
-        """ Scale alpha by the element characteristic length """
+        """Scale alpha by the element characteristic length."""
         from grudge.dt_utils import characteristic_lengthscales
         array_context = state.array_context
         length_scales = characteristic_lengthscales(array_context, discr)
@@ -1047,6 +1003,12 @@ def main(ctx_factory=cl.create_some_context,
         #alpha_field = state.mass
 
         return alpha_field
+
+    def dummy_pre_step(step, t, dt, state):
+        return state, dt
+
+    def dummy_post_step(step, t, dt, state):
+        return state, dt
 
     def my_pre_step(step, t, dt, state):
         cv, tseed = state
@@ -1103,74 +1065,58 @@ def main(ctx_factory=cl.create_some_context,
             logmgr.tick_after()
         return make_obj_array([fluid_state.cv, fluid_state.temperature]), dt
 
-    def my_rhs_without_combustion(t, state):
+    from mirgecom.gas_model import make_operator_fluid_states
+    from mirgecom.navierstokes import grad_cv_operator
+    use_av = False
+    use_sponge = True
+
+    def my_rhs(t, state):
         cv, tseed = state
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
                                        temperature_seed=tseed)
-        alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
-        cv_rhs = (
+
+        operator_fluid_states = make_operator_fluid_states(
+            discr, fluid_state, gas_model, boundaries, quadrature_tag)
+
+        grad_fluid_cv = grad_cv_operator(
+            discr, gas_model, boundaries, fluid_state,
+            quadrature_tag=quadrature_tag,
+            operator_states_quad=operator_fluid_states)
+
+        ns_rhs = \
             ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
-                        gas_model=gas_model, quadrature_tag=quadrature_tag)
-            + av_laplacian_operator(discr, fluid_state=fluid_state,
-                                    boundaries=boundaries,
-                                    boundary_kwargs={"time": t,
-                                                     "gas_model": gas_model},
-                                    alpha=alpha_field, s0=s0_sc, kappa=kappa_sc,
-                                    quadrature_tag=quadrature_tag)
-            + sponge_source(cv=fluid_state.cv, cv_ref=target_cv, sigma=sponge_sigma)
-        )
-        return make_obj_array([cv_rhs, 0*tseed])
+                        gas_model=gas_model, quadrature_tag=quadrature_tag,
+                        operator_states_quad=operator_fluid_states,
+                        grad_cv=grad_fluid_cv)
+        chem_rhs = 0*cv
+        if nspecies > 2:
+            chem_rhs =  \
+                eos.get_species_source_terms(cv, temperature=fluid_state.temperature)
 
-    def my_rhs_with_combustion(t, state):
-        cv, tseed = state
-        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-                                       temperature_seed=tseed)
-        alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
-        cv_rhs = (
-            ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
-                        gas_model=gas_model, quadrature_tag=quadrature_tag)
-            + eos.get_species_source_terms(cv,
-                                           temperature=fluid_state.temperature)
-            + av_laplacian_operator(discr, fluid_state=fluid_state,
-                                    boundaries=boundaries,
-                                    boundary_kwargs={"time": t,
-                                                     "gas_model": gas_model},
-                                    alpha=alpha_field, s0=s0_sc, kappa=kappa_sc,
-                                    quadrature_tag=quadrature_tag)
-            + sponge_source(cv=cv, cv_ref=restart_cv, sigma=sponge_sigma)
-        )
-        return make_obj_array([cv_rhs, 0*tseed])
+        av_rhs = 0*cv
+        if use_av:
+            alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+            av_rhs = \
+                av_laplacian_operator(discr, fluid_state=fluid_state,
+                                      boundaries=boundaries, gas_model=gas_model,
+                                      time=t, alpha=alpha_field, s0=s0_sc,
+                                      kappa=kappa_sc, quadrature_tag=quadrature_tag,
+                                      operator_states_quad=operator_fluid_states)
 
-    def my_rhs_with_ignition(t, state):
-        cv, tseed = state
-        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-                                       temperature_seed=tseed)
-        alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
-        cv_rhs = (
-            ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
-                        gas_model=gas_model, quadrature_tag=quadrature_tag)
-            + eos.get_species_source_terms(cv,
-                                           temperature=fluid_state.temperature)
-            + av_laplacian_operator(discr, fluid_state=fluid_state,
-                                    boundaries=boundaries,
-                                    boundary_kwargs={"time": t,
-                                                     "gas_model": gas_model},
-                                    alpha=alpha_field, s0=s0_sc, kappa=kappa_sc,
-                                    quadrature_tag=quadrature_tag)
-            + ignition_source(x_vec=x_vec, cv=cv, time=t)
-            + sponge_source(cv=cv, cv_ref=restart_cv, sigma=sponge_sigma)
-        )
-        return make_obj_array([cv_rhs, 0*tseed])
+        sponge_rhs = 0*cv
+        if use_sponge:
+            sponge_rhs = sponge_source(cv=cv, cv_ref=restart_cv, sigma=sponge_sigma)
 
-    current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
-                                  current_cfl, t_final, constant_cfl)
-
-    my_rhs = my_rhs_without_combustion
-    if nspecies > 2:
+        ignition_rhs = 0*cv
         if ignition:
-            my_rhs = my_rhs_with_ignition
-        else:
-            my_rhs = my_rhs_with_combustion
+            ignition_rhs = ignition_source(x_vec=x_vec, cv=cv, time=t)
+
+        cv_rhs = ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs
+        return make_obj_array([cv_rhs, 0*tseed])
+
+    if constant_cfl:
+        current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
+                                      current_cfl, t_final, constant_cfl)
 
     current_step, current_t, stepper_state = \
         advance_state(rhs=my_rhs, timestepper=timestepper,
@@ -1179,6 +1125,7 @@ def main(ctx_factory=cl.create_some_context,
                       istep=current_step, dt=current_dt,
                       t=current_t, t_final=t_final,
                       state=make_obj_array([current_state.cv, temperature_seed]))
+
     current_cv, tseed = stepper_state
     current_state = make_fluid_state(current_cv, gas_model, tseed)
 
