@@ -98,9 +98,9 @@ class MyRuntimeError(RuntimeError):
 
 
 class SparkSource:
-    r"""Deposit energy from a ignition source.
+    r"""Deposit energy from an ignition source.
 
-    Internal energy is deposited as a gaussian  of the form:
+    Internal energy is deposited as a gaussian of the form:
 
     .. math::
 
@@ -112,7 +112,7 @@ class SparkSource:
 
     def __init__(self, *, dim, center=None, width=1.0,
                  amplitude=0., amplitude_func=None):
-        r"""Initialize the sponge parameters.
+        r"""Initialize the spark parameters.
 
         Parameters
         ----------
@@ -140,8 +140,8 @@ class SparkSource:
 
         Parameters
         ----------
-        cv: :class:`mirgecom.gas_model.FluidState`
-            Fluid state object with the conserved and thermal state.
+        cv: :class:`~mirgecom.fluid.ConservedVars`
+            Fluid conserved quantities
         time: float
             Current time at which the solution is desired
         x_vec: numpy.ndarray
@@ -334,8 +334,13 @@ def main(ctx_factory=cl.create_some_context,
     mu_override = False  # optionally read in from input
     nspecies = 0
 
+    # rhs control
+    use_ignition = False
+    use_sponge = True
+    use_av = True
+    use_combustion = False
+
     # initialize the ignition spark
-    ignition = False
     spark_center = np.zeros(shape=(dim,))
     spark_center[0] = 0.677
     spark_center[1] = -0.021
@@ -442,7 +447,19 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
-            ignition = bool(input_data["ignition"])
+            use_ignition = bool(input_data["use_ignition"])
+        except KeyError:
+            pass
+        try:
+            use_sponge = bool(input_data["use_sponge"])
+        except KeyError:
+            pass
+        try:
+            use_av = bool(input_data["use_av"])
+        except KeyError:
+            pass
+        try:
+            use_combustion = bool(input_data["use_combustion"])
         except KeyError:
             pass
         try:
@@ -474,7 +491,7 @@ def main(ctx_factory=cl.create_some_context,
         print(f"\tTime integration {integrator}")
         print("#### Simluation control data: ####\n")
 
-    if rank == 0 and ignition:
+    if rank == 0 and use_ignition:
         print("\n#### Ignition control parameters ####")
         print(f"spark center ({spark_center[0]},{spark_center[1]})")
         print(f"spark FWHM {spark_diameter}")
@@ -517,6 +534,10 @@ def main(ctx_factory=cl.create_some_context,
 
     kappa = cp*mu/Pr
     init_temperature = 300.0
+
+    # Turn off combustion unless EOS supports it
+    if nspecies < 3:
+        use_combustion = False
 
     if rank == 0:
         print("\n#### Simluation material properties: ####")
@@ -1067,8 +1088,6 @@ def main(ctx_factory=cl.create_some_context,
 
     from mirgecom.gas_model import make_operator_fluid_states
     from mirgecom.navierstokes import grad_cv_operator
-    use_av = False
-    use_sponge = True
 
     def my_rhs(t, state):
         cv, tseed = state
@@ -1088,8 +1107,9 @@ def main(ctx_factory=cl.create_some_context,
                         gas_model=gas_model, quadrature_tag=quadrature_tag,
                         operator_states_quad=operator_fluid_states,
                         grad_cv=grad_fluid_cv)
+
         chem_rhs = 0*cv
-        if nspecies > 2:
+        if use_combustion:
             chem_rhs =  \
                 eos.get_species_source_terms(cv, temperature=fluid_state.temperature)
 
@@ -1108,7 +1128,7 @@ def main(ctx_factory=cl.create_some_context,
             sponge_rhs = sponge_source(cv=cv, cv_ref=restart_cv, sigma=sponge_sigma)
 
         ignition_rhs = 0*cv
-        if ignition:
+        if use_ignition:
             ignition_rhs = ignition_source(x_vec=x_vec, cv=cv, time=t)
 
         cv_rhs = ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs

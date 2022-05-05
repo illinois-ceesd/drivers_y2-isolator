@@ -23,3 +23,8 @@ health_pres_min: 2.17660e3
 health_pres_max: 2.74328e5
 health_mass_frac_min: -9.e-7
 health_mass_frac_max: 1.0001
+# control what is turned on in rhs
+use_ignition: 0
+use_av: 0
+use_sponge: 0
+use_combustion: 1
