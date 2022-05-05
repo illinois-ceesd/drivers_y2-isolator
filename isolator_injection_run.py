@@ -447,6 +447,10 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
+            use_boundaries = bool(input_data["use_boundaries"])
+        except KeyError:
+            pass
+        try:
             use_ignition = bool(input_data["use_ignition"])
         except KeyError:
             pass
@@ -1049,7 +1053,7 @@ def main(ctx_factory=cl.create_some_context,
             if logmgr:
                 logmgr.tick_before()
 
-            alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+            alpha_field = my_get_alpha(fluid_state, alpha_sc)
             ts_field, cfl, dt = my_get_timestep(t, dt, fluid_state, alpha_field)
 
             do_viz = check_step(step=step, interval=nviz)
@@ -1162,7 +1166,7 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info("Checkpointing final state ...")
     final_dv = current_state.dv
-    alpha_field = my_get_alpha(discr, current_state, alpha_sc)
+    alpha_field = my_get_alpha(current_state, alpha_sc)
     ts_field, cfl, dt = my_get_timestep(t=current_t, dt=current_dt,
                                         state=current_state, alpha=alpha_field)
     my_write_status(dt=dt, cfl=cfl, cv=current_state.cv, dv=final_dv)
