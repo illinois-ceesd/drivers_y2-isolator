@@ -175,11 +175,6 @@ class SparkSource:
                               momentum=momentum, species_mass=species_mass)
 
 
-def sponge_source(cv, cv_ref, sigma):
-    """Create sponge source."""
-    return sigma*(cv_ref - cv)
-
-
 class InitSponge:
     r"""Initialize sponge.
 
@@ -339,6 +334,7 @@ def main(ctx_factory=cl.create_some_context,
     use_sponge = True
     use_av = True
     use_combustion = False
+    use_boundaries = True
 
     # initialize the ignition spark
     spark_center = np.zeros(shape=(dim,))
@@ -444,6 +440,10 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             health_mass_frac_max = float(input_data["health_mass_frac_max"])
+        except KeyError:
+            pass
+        try:
+            use_boundaries = bool(input_data["use_boundaries"])
         except KeyError:
             pass
         try:
@@ -747,7 +747,16 @@ def main(ctx_factory=cl.create_some_context,
     sponge_init = InitSponge(x0=sponge_x0, thickness=sponge_thickness,
                              amplitude=sponge_amp)
     x_vec = thaw(discr.nodes(), actx)
-    sponge_sigma = sponge_init(x_vec=x_vec)
+
+    def _sponge_sigma(x_vec):
+        return sponge_init(x_vec=x_vec)
+
+    get_sponge_sigma = actx.compile(_sponge_sigma)
+    sponge_sigma = get_sponge_sigma(x_vec)
+
+    def _sponge_source(cv):
+        """Create sponge source."""
+        return sponge_sigma*(current_state.cv - cv)
 
     from mirgecom.gas_model import project_fluid_state
     from grudge.dof_desc import DOFDesc, as_dofdesc
@@ -784,15 +793,18 @@ def main(ctx_factory=cl.create_some_context,
 
     wall = IsothermalWallBoundary()
 
-    boundaries = {
-        DTAG_BOUNDARY("inflow"):
-        PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
-        DTAG_BOUNDARY("outflow"):
-        PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
-        DTAG_BOUNDARY("injection"):
-        PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
-        DTAG_BOUNDARY("wall"): wall
-    }
+    if use_boundaries:
+        boundaries = {
+            DTAG_BOUNDARY("inflow"):
+            PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
+            DTAG_BOUNDARY("outflow"):
+            PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
+            DTAG_BOUNDARY("injection"):
+            PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
+            DTAG_BOUNDARY("wall"): wall
+        }
+    else:
+        boundaries = {}
 
     #from mirgecom.simutil import boundary_report
     #boundary_report(discr, boundaries, f"{casename}_boundaries_np{nparts}.yaml")
@@ -1008,22 +1020,19 @@ def main(ctx_factory=cl.create_some_context,
 
         return ts_field, cfl, min(t_remaining, dt)
 
+    from grudge.dt_utils import characteristic_lengthscales
+    length_scales = characteristic_lengthscales(actx, discr)
+
+    def _get_sc_scale():
+        return alpha_sc * length_scales
+
+    get_sc_scale = actx.compile(_get_sc_scale)
+
+    sc_scale = get_sc_scale()
+
     def my_get_alpha(discr, state, alpha):
         """Scale alpha by the element characteristic length."""
-        from grudge.dt_utils import characteristic_lengthscales
-        array_context = state.array_context
-        length_scales = characteristic_lengthscales(array_context, discr)
-
-        #from mirgecom.fluid import compute_wavespeed
-        #wavespeed = compute_wavespeed(eos, state)
-
-        vmag = array_context.np.sqrt(np.dot(state.velocity, state.velocity))
-        #alpha_field = alpha*wavespeed*length_scales
-        alpha_field = alpha*vmag*length_scales
-        #alpha_field = wavespeed*0 + alpha*current_step
-        #alpha_field = state.mass
-
-        return alpha_field
+        return alpha*state.speed*length_scales
 
     def dummy_pre_step(step, t, dt, state):
         return state, dt
@@ -1115,7 +1124,7 @@ def main(ctx_factory=cl.create_some_context,
 
         av_rhs = 0*cv
         if use_av:
-            alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+            alpha_field = sc_scale * fluid_state.speed
             av_rhs = \
                 av_laplacian_operator(discr, fluid_state=fluid_state,
                                       boundaries=boundaries, gas_model=gas_model,
@@ -1125,7 +1134,7 @@ def main(ctx_factory=cl.create_some_context,
 
         sponge_rhs = 0*cv
         if use_sponge:
-            sponge_rhs = sponge_source(cv=cv, cv_ref=restart_cv, sigma=sponge_sigma)
+            sponge_rhs = _sponge_source(cv=cv)
 
         ignition_rhs = 0*cv
         if use_ignition:

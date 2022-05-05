@@ -25,6 +25,7 @@ health_mass_frac_min: -9.e-7
 health_mass_frac_max: 1.0001
 # control what is turned on in rhs
 use_ignition: 0
-use_av: 0
-use_sponge: 0
+use_av: 1
+use_sponge: 1
 use_combustion: 1
+use_boundaries: 1
