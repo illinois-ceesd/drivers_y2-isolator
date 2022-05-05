@@ -339,6 +339,7 @@ def main(ctx_factory=cl.create_some_context,
     use_sponge = True
     use_av = True
     use_combustion = False
+    use_boundaries = True
 
     # initialize the ignition spark
     spark_center = np.zeros(shape=(dim,))
@@ -444,6 +445,10 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             health_mass_frac_max = float(input_data["health_mass_frac_max"])
+        except KeyError:
+            pass 
+        try:
+            use_boundaries = bool(input_data["use_boundaries"])
         except KeyError:
             pass
         try:
@@ -784,15 +789,18 @@ def main(ctx_factory=cl.create_some_context,
 
     wall = IsothermalWallBoundary()
 
-    boundaries = {
-        DTAG_BOUNDARY("inflow"):
-        PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
-        DTAG_BOUNDARY("outflow"):
-        PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
-        DTAG_BOUNDARY("injection"):
-        PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
-        DTAG_BOUNDARY("wall"): wall
-    }
+    if use_boundaries:
+        boundaries = {
+            DTAG_BOUNDARY("inflow"):
+            PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
+            DTAG_BOUNDARY("outflow"):
+            PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
+            DTAG_BOUNDARY("injection"):
+            PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
+            DTAG_BOUNDARY("wall"): wall
+        }
+    else:
+        boundaries = {}
 
     #from mirgecom.simutil import boundary_report
     #boundary_report(discr, boundaries, f"{casename}_boundaries_np{nparts}.yaml")
@@ -1008,22 +1016,13 @@ def main(ctx_factory=cl.create_some_context,
 
         return ts_field, cfl, min(t_remaining, dt)
 
-    def my_get_alpha(discr, state, alpha):
+    from grudge.dt_utils import characteristic_lengthscales
+    length_scales = characteristic_lengthscales(actx, discr)
+    sc_scale = alpha_sc * characteristic_lengthscales(actx, discr)
+
+    def my_get_alpha(state, alpha):
         """Scale alpha by the element characteristic length."""
-        from grudge.dt_utils import characteristic_lengthscales
-        array_context = state.array_context
-        length_scales = characteristic_lengthscales(array_context, discr)
-
-        #from mirgecom.fluid import compute_wavespeed
-        #wavespeed = compute_wavespeed(eos, state)
-
-        vmag = array_context.np.sqrt(np.dot(state.velocity, state.velocity))
-        #alpha_field = alpha*wavespeed*length_scales
-        alpha_field = alpha*vmag*length_scales
-        #alpha_field = wavespeed*0 + alpha*current_step
-        #alpha_field = state.mass
-
-        return alpha_field
+        return alpha*state.speed*length_scales
 
     def dummy_pre_step(step, t, dt, state):
         return state, dt
@@ -1040,7 +1039,7 @@ def main(ctx_factory=cl.create_some_context,
             if logmgr:
                 logmgr.tick_before()
 
-            alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+            alpha_field = my_get_alpha(fluid_state, alpha_sc)
             ts_field, cfl, dt = my_get_timestep(t, dt, fluid_state, alpha_field)
 
             do_viz = check_step(step=step, interval=nviz)
@@ -1115,7 +1114,7 @@ def main(ctx_factory=cl.create_some_context,
 
         av_rhs = 0*cv
         if use_av:
-            alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+            alpha_field = sc_scale * fluid_state.speed
             av_rhs = \
                 av_laplacian_operator(discr, fluid_state=fluid_state,
                                       boundaries=boundaries, gas_model=gas_model,
@@ -1153,7 +1152,7 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info("Checkpointing final state ...")
     final_dv = current_state.dv
-    alpha_field = my_get_alpha(discr, current_state, alpha_sc)
+    alpha_field = my_get_alpha(current_state, alpha_sc)
     ts_field, cfl, dt = my_get_timestep(t=current_t, dt=current_dt,
                                         state=current_state, alpha=alpha_field)
     my_write_status(dt=dt, cfl=cfl, cv=current_state.cv, dv=final_dv)
