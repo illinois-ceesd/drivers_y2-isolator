@@ -766,26 +766,6 @@ def main(ctx_factory=cl.create_some_context,
     from grudge.dof_desc import DOFDesc, as_dofdesc
     dd_base_vol = DOFDesc("vol")
 
-    # inflow_btag = DTAG_BOUNDARY("inflow")
-    # inflow_ref_state = project_fluid_state(
-    #     discr, dd_base_vol,
-    #     as_dofdesc(inflow_btag).with_discr_tag(quadrature_tag),
-    #     target_state, gas_model
-    # )
-
-    # outflow_btag = DTAG_BOUNDARY("outflow")
-    # outflow_ref_state = project_fluid_state(
-    #     discr, dd_base_vol,
-    #     as_dofdesc(outflow_btag).with_discr_tag(quadrature_tag),
-    #     target_state, gas_model
-    # )
-
-    # injection_btag = DTAG_BOUNDARY("injection")
-    # injection_ref_state = project_fluid_state(
-    #     discr, dd_base_vol,
-    #     as_dofdesc(injection_btag).with_discr_tag(quadrature_tag),
-    #     target_state, gas_model
-    # )
     flow_boundary_btag = DTAG_BOUNDARY("flow")
     flow_ref_state = project_fluid_state(
         discr, dd_base_vol,
@@ -797,27 +777,9 @@ def main(ctx_factory=cl.create_some_context,
     def _target_flow_state_func(**kwargs):
         return flow_ref_state
 
-    # def _injection_state_func(**kwargs):
-    #     return injection_ref_state
-
-    # def _inflow_state_func(**kwargs):
-    #     return inflow_ref_state
-
-    # def _outflow_state_func(**kwargs):
-    #     return outflow_ref_state
-
     wall = IsothermalWallBoundary()
 
     if use_boundaries:
-        # boundaries = {
-        #    DTAG_BOUNDARY("inflow"):
-        #    PrescribedFluidBoundary(boundary_state_func=_inflow_state_func),
-        #    DTAG_BOUNDARY("outflow"):
-        #    PrescribedFluidBoundary(boundary_state_func=_outflow_state_func),
-        #    DTAG_BOUNDARY("injection"):
-        #    PrescribedFluidBoundary(boundary_state_func=_injection_state_func),
-        #    DTAG_BOUNDARY("wall"): wall
-        # }
         boundaries = {
             DTAG_BOUNDARY("flow"):
             PrescribedFluidBoundary(boundary_state_func=_target_flow_state_func),
@@ -1054,12 +1016,6 @@ def main(ctx_factory=cl.create_some_context,
         """Scale alpha by the element characteristic length."""
         return alpha*state.speed*length_scales
 
-    def dummy_pre_step(step, t, dt, state):
-        return state, dt
-
-    def dummy_post_step(step, t, dt, state):
-        return state, dt
-
     def my_pre_step(step, t, dt, state):
         cv, tseed = state
         fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
@@ -1106,14 +1062,15 @@ def main(ctx_factory=cl.create_some_context,
 
     def my_post_step(step, t, dt, state):
         cv, tseed = state
-        fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
+
         # Logmgr needs to know about EOS, dt, dim?
         # imo this is a design/scope flaw
         if logmgr:
             set_dt(logmgr, dt)
             set_sim_state(logmgr, dim, cv, gas_model.eos)
             logmgr.tick_after()
-        return make_obj_array([fluid_state.cv, fluid_state.temperature]), dt
+
+        return state, dt
 
     from mirgecom.gas_model import make_operator_fluid_states
     from mirgecom.navierstokes import grad_cv_operator
@@ -1123,6 +1080,10 @@ def main(ctx_factory=cl.create_some_context,
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
                                        temperature_seed=tseed)
 
+        # Temperature seed RHS (keep tseed updated)
+        tseed_rhs = fluid_state.temperature - tseed
+
+        # Steps common to NS and AV (and wall model needs grad(temperature))
         operator_fluid_states = make_operator_fluid_states(
             discr, fluid_state, gas_model, boundaries, quadrature_tag)
 
@@ -1131,6 +1092,7 @@ def main(ctx_factory=cl.create_some_context,
             quadrature_tag=quadrature_tag,
             operator_states_quad=operator_fluid_states)
 
+        # Fluid CV RHS contributions 
         ns_rhs = \
             ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
                         gas_model=gas_model, quadrature_tag=quadrature_tag,
@@ -1138,7 +1100,7 @@ def main(ctx_factory=cl.create_some_context,
                         grad_cv=grad_fluid_cv)
 
         chem_rhs = 0*cv
-        if use_combustion:
+        if use_combustion:  # conditionals evaluated only once at compile time
             chem_rhs =  \
                 eos.get_species_source_terms(cv, temperature=fluid_state.temperature)
 
@@ -1161,7 +1123,7 @@ def main(ctx_factory=cl.create_some_context,
             ignition_rhs = ignition_source(x_vec=x_vec, cv=cv, time=t)
 
         cv_rhs = ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs
-        return make_obj_array([cv_rhs, 0*tseed])
+        return make_obj_array([cv_rhs, tseed_rhs])
 
     if constant_cfl:
         current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
@@ -1176,7 +1138,7 @@ def main(ctx_factory=cl.create_some_context,
                       state=make_obj_array([current_state.cv, temperature_seed]))
 
     current_cv, tseed = stepper_state
-    current_state = make_fluid_state(current_cv, gas_model, tseed)
+    current_state = create_fluid_state(current_cv, tseed)
 
     # Dump the final data
     if rank == 0:
