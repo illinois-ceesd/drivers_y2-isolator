@@ -773,9 +773,6 @@ def main(ctx_factory=cl.create_some_context,
             target_state, gas_model
         )
 
-    # Performance/correctness question: Force evaluate (thaw/freeze) it?
-    # flow_ref_state = thaw(freeze(flow_ref_state, actx), actx)
-
     # ---- Set boundary conditions
 
     # Performance question: Return constant state, or function?
@@ -793,10 +790,16 @@ def main(ctx_factory=cl.create_some_context,
     flow_ref_state = \
         get_target_state_on_boundary(DTAG_BOUNDARY("flow"))
 
+    # Performance/correctness question: Force evaluate (thaw/freeze) it?
+    # flow_ref_state = thaw(freeze(flow_ref_state, actx), actx)
+
     def _target_flow_state_func(**kwargs):
         return flow_ref_state
 
     wall = IsothermalWallBoundary()
+
+    # If you want Option 1:
+    # PrescribedFluidBoundary(boundary_state_func=_target_state_boundary_func)
 
     if use_boundaries:
         boundaries = {
