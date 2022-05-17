@@ -766,14 +766,33 @@ def main(ctx_factory=cl.create_some_context,
     from grudge.dof_desc import DOFDesc, as_dofdesc
     dd_base_vol = DOFDesc("vol")
 
-    flow_boundary_btag = DTAG_BOUNDARY("flow")
-    flow_ref_state = project_fluid_state(
-        discr, dd_base_vol,
-        as_dofdesc(flow_boundary_btag).with_discr_tag(quadrature_tag),
-        target_state, gas_model
-    )
+    def get_target_state_on_boundary(btag):
+        return project_fluid_state(
+            discr, dd_base_vol,
+            as_dofdesc(btag).with_discr_tag(quadrature_tag),
+            target_state, gas_model
+        )
 
-    # Set boundary conditions
+    # Performance/correctness question: Force evaluate (thaw/freeze) it?
+    # flow_ref_state = thaw(freeze(flow_ref_state, actx), actx)
+
+    # ---- Set boundary conditions
+
+    # Performance question: Return constant state, or function?
+
+    # Option 1: Return a projection function to get the boundary state
+    #           which is called by the BC at stepping time.
+    # def _target_state_boundary_func(btag, **kwargs):
+    #     return get_target_state_on_boundary(btag)
+    #
+
+    # Option 2: Return the constant state, already projected to the
+    #           boundary to be used by the BC.
+
+    # Make a constant state pinned to the "flow" boundary
+    flow_ref_state = \
+        get_target_state_on_boundary(DTAG_BOUNDARY("flow"))
+
     def _target_flow_state_func(**kwargs):
         return flow_ref_state
 
