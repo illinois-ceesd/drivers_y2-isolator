@@ -38,13 +38,13 @@ from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import DTAG_BOUNDARY
+import grudge.op as op
 #from grudge.op import nodal_max, nodal_min
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
     logmgr_set_time,
-    set_sim_state
 )
 
 from mirgecom.navierstokes import ns_operator
@@ -315,6 +315,8 @@ def main(ctx_factory=cl.create_some_context,
     health_temp_max = 5000
     health_mass_frac_min = -10
     health_mass_frac_max = 10
+    temperature_niter = 1
+    temperature_tol = 1e-3
 
     # discretization and model control
     order = 1
@@ -424,6 +426,14 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             health_pres_max = float(input_data["health_pres_max"])
+        except KeyError:
+            pass
+        try:
+            temperature_niter = int(input_data["temperature_niter"])
+        except KeyError:
+            pass
+        try:
+            temperature_tol = float(input_data["temperature_tol"])
         except KeyError:
             pass
         try:
@@ -570,7 +580,9 @@ def main(ctx_factory=cl.create_some_context,
         from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
         from mirgecom.mechanisms.uiuc import Thermochemistry
         pyro_mech = \
-            get_pyrometheus_wrapper_class(Thermochemistry)(actx.np)
+            get_pyrometheus_wrapper_class(
+                pyro_class=Thermochemistry,
+                temperature_niter=temperature_niter)(actx.np)
         eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
         species_names = pyro_mech.species_names
 
@@ -672,6 +684,13 @@ def main(ctx_factory=cl.create_some_context,
                                 temperature_seed=temperature_seed)
 
     create_fluid_state = actx.compile(get_fluid_state)
+
+    def get_temperature_update(cv, temperature):
+        y = cv.species_mass_fractions
+        e = gas_model.eos.internal_energy(cv) / cv.mass
+        return pyro_mech.get_temperature_update_energy(e, temperature, y)
+
+    compute_temperature_update = actx.compile(get_temperature_update)
 
     if restart_filename:
         if rank == 0:
@@ -791,7 +810,7 @@ def main(ctx_factory=cl.create_some_context,
         get_target_state_on_boundary(DTAG_BOUNDARY("flow"))
 
     # Performance/correctness question: Force evaluate (thaw/freeze) it?
-    # flow_ref_state = thaw(freeze(flow_ref_state, actx), actx)
+    flow_ref_state = thaw(freeze(flow_ref_state, actx), actx)
 
     def _target_flow_state_func(**kwargs):
         return flow_ref_state
@@ -827,21 +846,17 @@ def main(ctx_factory=cl.create_some_context,
         logger.info(init_message)
 
     # some utility functions
-    def vol_min_loc(x):
-        from grudge.op import nodal_min_loc
-        return actx.to_numpy(nodal_min_loc(discr, "vol", x))[()]
-
-    def vol_max_loc(x):
-        from grudge.op import nodal_max_loc
-        return actx.to_numpy(nodal_max_loc(discr, "vol", x))[()]
-
     def vol_min(x):
         from grudge.op import nodal_min
         return actx.to_numpy(nodal_min(discr, "vol", x))[()]
 
+    # vol_min = actx.compile(_vol_min)
+
     def vol_max(x):
         from grudge.op import nodal_max
         return actx.to_numpy(nodal_max(discr, "vol", x))[()]
+
+    # vol_max = actx.compile(_vol_max)
 
     def my_write_status(cv, dv, dt, cfl):
         status_msg = f"-------- dt = {dt:1.3e}, cfl = {cfl:1.4f}"
@@ -910,15 +925,42 @@ def main(ctx_factory=cl.create_some_context,
             }
             write_restart_file(actx, restart_data, restart_fname, comm)
 
-    def my_health_check(cv, dv):
+    def temperature_health_check(fluid_state):
         health_error = False
+
+        # This check is the temperature convergence check
+        # The current *temperature* is what Pyrometheus gets
+        # after a fixed number of Newton iterations, *n_iter*.
+        # Note: The local max jig below works around a very long compile
+        # in lazy mode.
+        cv = fluid_state.cv
+        temperature = fluid_state.temperature
+        temp_resid = compute_temperature_update(cv, temperature) / temperature
+        temp_err = (actx.to_numpy(op.nodal_max_loc(discr, "vol", temp_resid)))
+
+        if temp_err > temperature_tol:
+            health_error = True
+            logger.info(f"{rank=}: Temperature is not converged {temp_resid=}.")
+
+        return health_error
+
+    def global_range_check(array, min_val, max_val):
+        return global_reduce(
+            check_range_local(discr, "vol", array, min_val, max_val), op="lor")
+
+    # global_range_check = actx.compile(_global_range_check)
+
+    def my_health_check(fluid_state):
+        health_error = False
+
+        cv = fluid_state.cv
+        dv = fluid_state.dv
+
         if check_naninf_local(discr, "vol", dv.pressure):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if global_reduce(check_range_local(discr, "vol", dv.pressure,
-                                     health_pres_min, health_pres_max),
-                                     op="lor"):
+        if global_range_check(dv.pressure, health_pres_min, health_pres_max):
             health_error = True
             p_min = vol_min(dv.pressure)
             p_max = vol_max(dv.pressure)
@@ -926,9 +968,7 @@ def main(ctx_factory=cl.create_some_context,
                         f"Simulation Range ({p_min=}, {p_max=}) "
                         f"Specified Limits ({health_pres_min=}, {health_pres_max=})")
 
-        if global_reduce(check_range_local(discr, "vol", dv.temperature,
-                                     health_temp_min, health_temp_max),
-                                     op="lor"):
+        if global_range_check(dv.temperature, health_temp_min, health_temp_max):
             health_error = True
             t_min = vol_min(dv.temperature)
             t_max = vol_max(dv.temperature)
@@ -937,17 +977,15 @@ def main(ctx_factory=cl.create_some_context,
                         f"Specified Limits ({health_temp_min=}, {health_temp_max=})")
 
         for i in range(nspecies):
-            if global_reduce(check_range_local(discr, "vol",
-                                               cv.species_mass_fractions[i],
-                                         health_mass_frac_min, health_mass_frac_max),
-                                         op="lor"):
+            if global_range_check(cv.species_mass_fractions[i], health_mass_frac_min,
+                                  health_mass_frac_max):
                 health_error = True
                 y_min = vol_min(cv.species_mass_fractions[i])
                 y_max = vol_max(cv.species_mass_fractions[i])
                 logger.info(f"Species mass fraction range violation. "
                             f"{species_names[i]}: ({y_min=}, {y_max=})")
 
-        return health_error
+        return health_error or temperature_health_check(fluid_state)
 
     def my_get_viscous_timestep(discr, state, alpha):
         """Routine returns the the node-local maximum stable viscous timestep.
@@ -1041,6 +1079,8 @@ def main(ctx_factory=cl.create_some_context,
     def my_pre_step(step, t, dt, state):
         cv, tseed = state
         fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
+        fluid_state = thaw(freeze(fluid_state, actx), actx)
+
         dv = fluid_state.dv
 
         try:
@@ -1056,7 +1096,7 @@ def main(ctx_factory=cl.create_some_context,
             do_status = check_step(step=step, interval=nstatus)
 
             if do_health:
-                health_errors = global_reduce(my_health_check(cv, dv), op="lor")
+                health_errors = global_reduce(my_health_check(fluid_state), op="lor")
                 if health_errors:
                     if rank == 0:
                         logger.warning("Fluid solution failed health check.")
@@ -1083,13 +1123,8 @@ def main(ctx_factory=cl.create_some_context,
         return state, dt
 
     def my_post_step(step, t, dt, state):
-        cv, tseed = state
-
-        # Logmgr needs to know about EOS, dt, dim?
-        # imo this is a design/scope flaw
         if logmgr:
             set_dt(logmgr, dt)
-            set_sim_state(logmgr, dim, cv, gas_model.eos)
             logmgr.tick_after()
 
         return state, dt
