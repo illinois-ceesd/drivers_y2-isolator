@@ -38,7 +38,6 @@ from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import DTAG_BOUNDARY
-import grudge.op as op
 #from grudge.op import nodal_max, nodal_min
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
@@ -314,8 +313,6 @@ def main(ctx_factory=cl.create_some_context,
     health_temp_max = 5000
     health_mass_frac_min = -10
     health_mass_frac_max = 10
-    temperature_niter = 1
-    temperature_tol = 1e-3
 
     # discretization and model control
     order = 1
@@ -441,14 +438,6 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             health_pres_max = float(input_data["health_pres_max"])
-        except KeyError:
-            pass
-        try:
-            temperature_niter = int(input_data["temperature_niter"])
-        except KeyError:
-            pass
-        try:
-            temperature_tol = float(input_data["temperature_tol"])
         except KeyError:
             pass
         try:
@@ -837,13 +826,12 @@ def main(ctx_factory=cl.create_some_context,
     flow_boundary = PrescribedFluidBoundary(
         boundary_state_func=_target_flow_state_func)
 
-
     # If you want Option 1:
     # PrescribedFluidBoundary(boundary_state_func=_target_state_boundary_func)
 
     if use_boundaries:
         boundaries = {
-            DTAG_BOUNDARY("flow"): flow_boundary
+            DTAG_BOUNDARY("flow"): flow_boundary,
             DTAG_BOUNDARY("wall"): wall
         }
     else:
@@ -967,29 +955,6 @@ def main(ctx_factory=cl.create_some_context,
             }
             write_restart_file(actx, restart_data, restart_fname, comm)
 
-    def temperature_health_check(fluid_state):
-        health_error = False
-
-        # This check is the temperature convergence check
-        # The current *temperature* is what Pyrometheus gets
-        # after a fixed number of Newton iterations, *n_iter*.
-        # Note: The local max jig below works around a very long compile
-        # in lazy mode.
-        cv = fluid_state.cv
-        temperature = fluid_state.temperature
-        temp_resid = compute_temperature_update(cv, temperature) / temperature
-        temp_err = (actx.to_numpy(op.nodal_max_loc(discr, "vol", temp_resid)))
-
-        if temp_err > temperature_tol:
-            health_error = True
-            logger.info(f"{rank=}: Temperature is not converged {temp_resid=}.")
-
-        return health_error
-
-    def global_range_check(array, min_val, max_val):
-        return global_reduce(
-            check_range_local(discr, "vol", array, min_val, max_val), op="lor")
-
     def my_health_check(fluid_state):
         health_error = False
 
@@ -1025,8 +990,6 @@ def main(ctx_factory=cl.create_some_context,
                 y_max = vol_max(cv.species_mass_fractions[i])
                 logger.info(f"Species mass fraction range violation. "
                             f"{species_names[i]}: ({y_min=}, {y_max=})")
-
-        return health_error or temperature_health_check(fluid_state)
 
         if nspecies > 2:
             # check the temperature convergence
@@ -1236,7 +1199,6 @@ def main(ctx_factory=cl.create_some_context,
 
         cv_rhs = ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs
         return make_obj_array([cv_rhs, tseed_rhs])
-
 
     if constant_cfl:
         current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
