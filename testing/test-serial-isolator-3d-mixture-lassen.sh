@@ -1,9 +1,8 @@
 #!/bin/bash
 
 EMIRGE_HOME=$1
+
 origin=$(pwd)
-# EXAMPLES_HOME=$2
-# examples_dir=${1-$origin}
 BATCH_SCRIPT_NAME="serial-3d-mixture-lassen-batch.sh"
 running_dir="${origin}/../smoke_test_injection_3d"
 
@@ -45,9 +44,9 @@ echo "Init phase...\n"
 \$serial_spawner_cmd python -O -u -m mpi4py ./isolator_injection_init.py -i run_params.yaml --lazy
 echo "Run phase...\n"
 \$serial_spawner_cmd python -O -u -m mpi4py ./isolator_injection_run.py -i run_params.yaml -r restart_data/isolator_init-000000 --log --lazy
-test_result = \$?
+test_result=\$?
 
-rm -rf ${origin}/serial-isolator-3d-mixture-result
+rm -f ${origin}/serial-isolator-3d-mixture-result
 printf "\${test_result}\n" > ${origin}/serial-isolator-3d-mixture-result
 
 touch ${origin}/isolator-testing-done
