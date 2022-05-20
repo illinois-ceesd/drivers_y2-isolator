@@ -44,7 +44,7 @@ from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
-    logmgr_set_time,
+    logmgr_set_time
 )
 
 from mirgecom.navierstokes import ns_operator
@@ -77,7 +77,6 @@ from mirgecom.fluid import make_conserved
 
 class SingleLevelFilter(logging.Filter):
     """Filter I/O."""
-
     def __init__(self, passlevel, reject):
         """Initialize the I/O filter."""
         self.passlevel = passlevel
@@ -330,6 +329,14 @@ def main(ctx_factory=cl.create_some_context,
     spec_diff = 1e-4
     mu_override = False  # optionally read in from input
     nspecies = 0
+    pyro_temp_iter = 3  # for pyrometheus, number of newton iterations
+    pyro_temp_tol = 1.e-4  # for pyrometheus, toleranace for temperature residual
+
+    # rhs control
+    use_ignition = False
+    use_sponge = True
+    use_av = True
+    use_combustion = True
 
     # rhs control
     use_ignition = False
@@ -409,6 +416,14 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
+            pyro_temp_iter = int(input_data["pyro_temp_iter"])
+        except KeyError:
+            pass
+        try:
+            pyro_temp_tol = float(input_data["pyro_temp_tol"])
+        except KeyError:
+            pass
+        try:
             order = int(input_data["order"])
         except KeyError:
             pass
@@ -457,10 +472,6 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
-            use_boundaries = bool(input_data["use_boundaries"])
-        except KeyError:
-            pass
-        try:
             use_ignition = bool(input_data["use_ignition"])
         except KeyError:
             pass
@@ -478,6 +489,14 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             spark_init_time = float(input_data["ignition_init_time"])
+        except KeyError:
+            pass
+        try:
+            use_sponge = bool(input_data["use_sponge"])
+        except KeyError:
+            pass
+        try:
+            use_av = bool(input_data["use_av"])
         except KeyError:
             pass
 
@@ -579,10 +598,8 @@ def main(ctx_factory=cl.create_some_context,
     else:
         from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
         from mirgecom.mechanisms.uiuc import Thermochemistry
-        pyro_mech = \
-            get_pyrometheus_wrapper_class(
-                pyro_class=Thermochemistry,
-                temperature_niter=temperature_niter)(actx.np)
+        pyro_mech = get_pyrometheus_wrapper_class(
+            pyro_class=Thermochemistry, temperature_niter=pyro_temp_iter)(actx.np)
         eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
         species_names = pyro_mech.species_names
 
@@ -687,10 +704,11 @@ def main(ctx_factory=cl.create_some_context,
 
     def get_temperature_update(cv, temperature):
         y = cv.species_mass_fractions
-        e = gas_model.eos.internal_energy(cv) / cv.mass
-        return pyro_mech.get_temperature_update_energy(e, temperature, y)
+        e = gas_model.eos.internal_energy(cv)/cv.mass
+        return actx.np.abs(
+            pyro_mech.get_temperature_update_energy(e, temperature, y))
 
-    compute_temperature_update = actx.compile(get_temperature_update)
+    get_temperature_update_compiled = actx.compile(get_temperature_update)
 
     if restart_filename:
         if rank == 0:
@@ -816,14 +834,16 @@ def main(ctx_factory=cl.create_some_context,
         return flow_ref_state
 
     wall = IsothermalWallBoundary()
+    flow_boundary = PrescribedFluidBoundary(
+        boundary_state_func=_target_flow_state_func)
+
 
     # If you want Option 1:
     # PrescribedFluidBoundary(boundary_state_func=_target_state_boundary_func)
 
     if use_boundaries:
         boundaries = {
-            DTAG_BOUNDARY("flow"):
-            PrescribedFluidBoundary(boundary_state_func=_target_flow_state_func),
+            DTAG_BOUNDARY("flow"): flow_boundary
             DTAG_BOUNDARY("wall"): wall
         }
     else:
@@ -856,16 +876,18 @@ def main(ctx_factory=cl.create_some_context,
         from grudge.op import nodal_max
         return actx.to_numpy(nodal_max(discr, "vol", x))[()]
 
-    # vol_max = actx.compile(_vol_max)
+    def global_range_check(array, min_val, max_val):
+        return global_reduce(
+            check_range_local(discr, "vol", array, min_val, max_val), op="lor")
 
     def my_write_status(cv, dv, dt, cfl):
         status_msg = f"-------- dt = {dt:1.3e}, cfl = {cfl:1.4f}"
-        temperature = thaw(freeze(dv.temperature, actx), actx)
-        pressure = thaw(freeze(dv.pressure, actx), actx)
-        p_min = vol_min(pressure)
-        p_max = vol_max(pressure)
-        t_min = vol_min(temperature)
-        t_max = vol_max(temperature)
+        #temperature = thaw(freeze(dv.temperature, actx), actx)
+        #pressure = thaw(freeze(dv.pressure, actx), actx)
+        p_min = vol_min(dv.pressure)
+        p_max = vol_max(dv.pressure)
+        t_min = vol_min(dv.temperature)
+        t_max = vol_max(dv.temperature)
 
         from pytools.obj_array import obj_array_vectorize
         y_min = obj_array_vectorize(lambda x: vol_min(x),
@@ -877,6 +899,19 @@ def main(ctx_factory=cl.create_some_context,
             f"\n-------- P (min, max) (Pa) = ({p_min:1.9e}, {p_max:1.9e})")
         dv_status_msg += (
             f"\n-------- T (min, max) (K)  = ({t_min:7g}, {t_max:7g})")
+
+        if nspecies > 2:
+            # check the temperature convergence
+            # a single call to get_temperature_update is like taking an additional
+            # Newton iteration and gives us a residual
+            temp_resid = get_temperature_update_compiled(
+                cv, dv.temperature)/dv.temperature
+            temp_err_min = vol_min(temp_resid)
+            temp_err_max = vol_max(temp_resid)
+            dv_status_msg += (
+                f"\n-------- T_resid (min, max) = "
+                f"({temp_err_min:1.5e}, {temp_err_max:1.5e})")
+
         for i in range(nspecies):
             dv_status_msg += (
                 f"\n-------- y_{species_names[i]} (min, max) = "
@@ -906,6 +941,13 @@ def main(ctx_factory=cl.create_some_context,
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
+
+        if nspecies > 2:
+            temp_resid = get_temperature_update_compiled(
+                cv, dv.temperature)/dv.temperature
+            viz_ext = [("temp_resid", temp_resid)]
+            viz_fields.extend(viz_ext)
+
         write_visfile(discr, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
@@ -948,8 +990,6 @@ def main(ctx_factory=cl.create_some_context,
         return global_reduce(
             check_range_local(discr, "vol", array, min_val, max_val), op="lor")
 
-    # global_range_check = actx.compile(_global_range_check)
-
     def my_health_check(fluid_state):
         health_error = False
 
@@ -977,8 +1017,9 @@ def main(ctx_factory=cl.create_some_context,
                         f"Specified Limits ({health_temp_min=}, {health_temp_max=})")
 
         for i in range(nspecies):
-            if global_range_check(cv.species_mass_fractions[i], health_mass_frac_min,
-                                  health_mass_frac_max):
+            if global_range_check(cv.species_mass_fractions[i],
+                                  health_mass_frac_min, health_mass_frac_max):
+
                 health_error = True
                 y_min = vol_min(cv.species_mass_fractions[i])
                 y_max = vol_max(cv.species_mass_fractions[i])
@@ -986,6 +1027,21 @@ def main(ctx_factory=cl.create_some_context,
                             f"{species_names[i]}: ({y_min=}, {y_max=})")
 
         return health_error or temperature_health_check(fluid_state)
+
+        if nspecies > 2:
+            # check the temperature convergence
+            # a single call to get_temperature_update is like taking an additional
+            # Newton iteration and gives us a residual
+            temp_resid = get_temperature_update_compiled(
+                cv, dv.temperature)/dv.temperature
+            temp_err = vol_max(temp_resid)
+            if temp_err > pyro_temp_tol:
+                health_error = True
+                #error = thaw(freeze(temp_err, actx), actx)
+                logger.info(f"Temperature is not converged "
+                            f"{temp_err=} > {pyro_temp_tol}.")
+
+        return health_error
 
     def my_get_viscous_timestep(discr, state, alpha):
         """Routine returns the the node-local maximum stable viscous timestep.
@@ -1065,16 +1121,16 @@ def main(ctx_factory=cl.create_some_context,
     from grudge.dt_utils import characteristic_lengthscales
     length_scales = characteristic_lengthscales(actx, discr)
 
-    def _get_sc_scale():
+    def my_get_alpha(state, alpha):
+        """Scale alpha by the element characteristic length and velocity"""
+        return alpha*state.speed*length_scales
+
+    def get_sc_scale():
         return alpha_sc * length_scales
 
-    get_sc_scale = actx.compile(_get_sc_scale)
+    get_sc_scale_compiled = actx.compile(get_sc_scale)
 
-    sc_scale = get_sc_scale()
-
-    def my_get_alpha(state, alpha):
-        """Scale alpha by the element characteristic length."""
-        return alpha*state.speed*length_scales
+    sc_scale = get_sc_scale_compiled()
 
     def my_pre_step(step, t, dt, state):
         cv, tseed = state
@@ -1136,7 +1192,6 @@ def main(ctx_factory=cl.create_some_context,
         cv, tseed = state
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
                                        temperature_seed=tseed)
-
         # Temperature seed RHS (keep tseed updated)
         tseed_rhs = fluid_state.temperature - tseed
 
@@ -1152,9 +1207,9 @@ def main(ctx_factory=cl.create_some_context,
         # Fluid CV RHS contributions
         ns_rhs = \
             ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
-                        gas_model=gas_model, quadrature_tag=quadrature_tag,
-                        operator_states_quad=operator_fluid_states,
-                        grad_cv=grad_fluid_cv)
+                gas_model=gas_model, quadrature_tag=quadrature_tag,
+                operator_states_quad=operator_fluid_states,
+                grad_cv=grad_fluid_cv)
 
         chem_rhs = 0*cv
         if use_combustion:  # conditionals evaluated only once at compile time
@@ -1166,10 +1221,10 @@ def main(ctx_factory=cl.create_some_context,
             alpha_field = sc_scale * fluid_state.speed
             av_rhs = \
                 av_laplacian_operator(discr, fluid_state=fluid_state,
-                                      boundaries=boundaries, gas_model=gas_model,
-                                      time=t, alpha=alpha_field, s0=s0_sc,
-                                      kappa=kappa_sc, quadrature_tag=quadrature_tag,
-                                      operator_states_quad=operator_fluid_states)
+                    boundaries=boundaries, gas_model=gas_model,
+                    time=t, alpha=alpha_field, s0=s0_sc,
+                    kappa=kappa_sc, quadrature_tag=quadrature_tag,
+                    operator_states_quad=operator_fluid_states)
 
         sponge_rhs = 0*cv
         if use_sponge:
@@ -1181,6 +1236,7 @@ def main(ctx_factory=cl.create_some_context,
 
         cv_rhs = ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs
         return make_obj_array([cv_rhs, tseed_rhs])
+
 
     if constant_cfl:
         current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
