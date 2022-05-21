@@ -44,7 +44,11 @@ echo "Init phase...\n"
 \$serial_spawner_cmd python -O -u -m mpi4py ./isolator_injection_init.py -i run_params.yaml --lazy
 echo "Run phase...\n"
 \$serial_spawner_cmd python -O -u -m mpi4py ./isolator_injection_run.py -i run_params.yaml -r restart_data/isolator_init-000000 --log --lazy
-test_result=\$?
+test_result="0"
+if [ ! -f restart_data/isolator-000020-0000.pkl ];
+then
+   test_result="1"
+fi
 
 rm -f ${origin}/serial-isolator-3d-mixture-result
 printf "\${test_result}\n" > ${origin}/serial-isolator-3d-mixture-result
