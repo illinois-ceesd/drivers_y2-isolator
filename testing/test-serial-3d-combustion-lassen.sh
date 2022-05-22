@@ -10,11 +10,11 @@ BATCH_SCRIPT_NAME="${TEST_NAME}-lassen-batch.sh"
 running_dir="${origin}/../smoke_test_injection_3d"
 
 printf "Running Lassen batch script Test ($TEST_NAME):\n"
-printf "- Origin directory: ${origin}\n"
-printf "- Running directory: ${running_dir}\n"
-printf "- Emirge home: ${EMIRGE_HOME}\n"
-printf "- Log file: ${TESTING_LOG_FILE}\n"
-printf "- Results file: ${TESTING_RESTULS_FILE}\n"
+printf " Origin directory: ${origin}\n"
+printf " Running directory: ${running_dir}\n"
+printf " Emirge home: ${EMIRGE_HOME}\n"
+printf " Log file: ${TESTING_LOG_FILE}\n"
+printf " Results file: ${TESTING_RESTULS_FILE}\n"
 
 # Most of the batch script stuff is boiler-plate
 # There is a short test-specific section marked below
