@@ -14,7 +14,7 @@ printf " Origin directory: ${origin}\n"
 printf " Running directory: ${running_dir}\n"
 printf " Emirge home: ${EMIRGE_HOME}\n"
 printf " Log file: ${TESTING_LOG_FILE}\n"
-printf " Results file: ${TESTING_RESTULS_FILE}\n"
+printf " Results file: ${TESTING_RESULTS_FILE}\n"
 
 # Most of the batch script stuff is boiler-plate
 # There is a short test-specific section marked below
