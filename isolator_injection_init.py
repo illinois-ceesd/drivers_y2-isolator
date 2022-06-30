@@ -784,8 +784,6 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     mach_inj = 1.0
 
     # parameters to adjust the shape of the initialization
-    #vel_sigma = 2000
-    #temp_sigma = 2500
     vel_sigma = 1000
     temp_sigma = 1250
     # adjusted to match the mass flow rate

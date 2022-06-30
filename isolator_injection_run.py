@@ -677,9 +677,9 @@ def main(ctx_factory=cl.create_some_context,
         ])
 
         try:
-            #logmgr.add_watches(["memory_usage_python.max"])
-            logmgr.add_watches(["memory_usage_python.max",
-                                "memory: {value:6g} MByte"])
+            logmgr.add_watches(["memory_usage_python.max"])
+            #logmgr.add_watches(["memory_usage_python.max",
+            #                    "memory: {value:6g} MByte"])
         except KeyError:
             pass
 

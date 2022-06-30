@@ -791,3 +791,5 @@ Background Field = 100;
 Mesh.MeshSizeExtendFromBoundary = 0;
 Mesh.MeshSizeFromPoints = 0;
 Mesh.MeshSizeFromCurvature = 0;
+
+Mesh.Algorithm3D = 4;
