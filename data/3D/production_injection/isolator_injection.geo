@@ -36,6 +36,12 @@ Else
     shear_factor=1.0;
 EndIf
 
+If(Exists(isofac))
+    iso_factor=isofac;
+Else
+    iso_factor=1.0;
+EndIf
+
 If(Exists(cavityfac))
     cavity_factor=cavityfac;
 Else
@@ -44,10 +50,10 @@ EndIf
 
 bigsize = basesize*4;     // the biggest mesh size 
 inletsize = basesize*2;   // background mesh size upstream of the nozzle
-isosize = basesize;       // background mesh size in the isolator
-nozzlesize = basesize/2;       // background mesh size in the isolator
+isosize = basesize/iso_factor;       // background mesh size in the isolator
+nozzlesize = basesize/12;       // background mesh size in the nozzle
 cavitysize = basesize/cavity_factor; // background mesh size in the cavity region
-shearsize = cavitysize/shear_factor;
+shearsize = isosize/shear_factor;
 
 inj_h=4.e-3;  // height of injector (bottom) from floor
 inj_t=1.59e-3; // diameter of injector
@@ -648,10 +654,11 @@ Field[1].Sampling = 1000;
 //Create threshold field that varrries element size near boundaries
 Field[2] = Threshold;
 Field[2].InField = 1;
-Field[2].SizeMin = nozzlesize / boundratio;
+Field[2].SizeMin = isosize / boundratio;
 Field[2].SizeMax = isosize;
 Field[2].DistMin = 0.00002;
-Field[2].DistMax = 0.005;
+//Field[2].DistMax = 0.005;
+Field[2].DistMax = 0.01;
 Field[2].StopAtDistMax = 1;
 
 // Create distance field from curves, cavity only
@@ -669,7 +676,7 @@ Field[12].InField = 11;
 Field[12].SizeMin = cavitysize / boundratiocavity;
 Field[12].SizeMax = cavitysize;
 Field[12].DistMin = 0.00002;
-Field[12].DistMax = 0.005;
+Field[12].DistMax = 0.01;
 Field[12].StopAtDistMax = 1;
 
 // Create distance field from curves, injector only
@@ -685,7 +692,8 @@ Field[14].InField = 13;
 Field[14].SizeMin = injectorsize / boundratioinjector;
 Field[14].SizeMax = injectorsize;
 Field[14].DistMin = 0.000001;
-Field[14].DistMax = 0.0005;
+//Field[14].DistMax = 0.0005;
+Field[14].DistMax = 0.001;
 Field[14].StopAtDistMax = 1;
 
 nozzle_start = 0.27;
@@ -783,17 +791,19 @@ Field[8].VOut = bigsize;
 
 // take the minimum of all defined meshing fields
 Field[100] = Min;
-//Field[100].FieldsList = {2, 3, 4, 5, 6, 7, 12, 14};
 Field[100].FieldsList = {2, 3, 4, 5, 6, 7, 8, 12, 14};
-//Field[100].FieldsList = {2};
 Background Field = 100;
 
 Mesh.MeshSizeExtendFromBoundary = 0;
 Mesh.MeshSizeFromPoints = 0;
 Mesh.MeshSizeFromCurvature = 0;
 
-//Mesh.Algorithm3D = 1; // Delaunay
-Mesh.Algorithm3D = 4; // Frontal
-//Mesh.Algorithm3D = 10; // HXT, re-implemented Delaunay in parallel
+// Delaunay, seems to respect changing mesh sizes better
+// Mesh.Algorithm3D = 1; 
+// Frontal, makes a better looking mesh, will make bigger elements where I don't want them though
+// Doesn't repsect the mesh sizing parameters ...
+//Mesh.Algorithm3D = 4; 
+// HXT, re-implemented Delaunay in parallel
+Mesh.Algorithm3D = 10; 
 Mesh.OptimizeNetgen = 1;
 Mesh.Smoothing = 100;
