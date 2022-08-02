@@ -71,6 +71,7 @@ from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedFluidBoundary,
     IsothermalWallBoundary,
+    SymmetryBoundary
 )
 from mirgecom.eos import IdealSingleGas, PyrometheusMixture
 from mirgecom.transport import SimpleTransport
@@ -482,6 +483,10 @@ def main(ctx_factory=cl.create_some_context,
             use_combustion = bool(input_data["use_combustion"])
         except KeyError:
             pass
+        try:
+            vel_sigma_inj = float(input_data["vel_sigma_inj"])
+        except KeyError:
+            pass
 
     # param sanity check
     allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144", "compiled_lsrk54"]
@@ -823,11 +828,20 @@ def main(ctx_factory=cl.create_some_context,
         boundary_state_func=_target_flow_state_func)
 
     wall = IsothermalWallBoundary()
+    slip_wall = SymmetryBoundary()
 
     boundaries = {
         DTAG_BOUNDARY("flow"): flow_boundary,
         DTAG_BOUNDARY("wall"): wall
     }
+    # allow for a slip boundary inside the injector
+    if vel_sigma_inj == 0:
+        boundaries = {
+            DTAG_BOUNDARY("flow"): flow_boundary,
+            DTAG_BOUNDARY("wall_without_injector"): wall,
+            DTAG_BOUNDARY("injector_wall"): slip_wall
+        }
+
     #from mirgecom.simutil import boundary_report
     #boundary_report(discr, boundaries, f"{casename}_boundaries_np{nparts}.yaml")
 
