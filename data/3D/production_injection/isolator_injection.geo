@@ -773,7 +773,7 @@ Field[7].VOut = bigsize;
 
 // background mesh size in the shear region
 shear_start_x = 0.65;
-shear_end_x = 0.73;
+shear_end_x = 0.75;
 shear_start_y = -0.004;
 shear_end_y = -0.01;
 shear_start_z = -1.0;
