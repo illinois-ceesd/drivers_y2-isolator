@@ -344,6 +344,7 @@ def main(ctx_factory=cl.create_some_context,
     use_combustion = True
 
     sponge_sigma = 1.0
+    vel_sigma_inj = 5000
 
     # initialize the ignition spark
     spark_center = np.zeros(shape=(dim,))

@@ -16,8 +16,8 @@ nspecies: 7
 alpha_sc: 0.1
 spec_diff: 5.e-4
 # set this 0 for a slip injector
-vel_sigma_inj: 0.
-temp_sigma_inj: 0.
+#vel_sigma_inj: 0.
+#temp_sigma_inj: 0.
 kappa_sc: 0.5
 s0_sc: -5.0
 integrator: lsrk54
