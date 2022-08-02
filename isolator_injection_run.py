@@ -77,6 +77,7 @@ from mirgecom.eos import IdealSingleGas, PyrometheusMixture
 from mirgecom.transport import SimpleTransport
 from mirgecom.gas_model import GasModel, make_fluid_state
 from mirgecom.fluid import make_conserved
+from mirgecom.limiter import bound_preserving_limiter
 
 
 class SingleLevelFilter(logging.Filter):
@@ -303,6 +304,7 @@ def main(ctx_factory=cl.create_some_context,
     nhealth = 1
     nrestart = 5000
     nstatus = 1
+    nlimit = 0
 
     # default timestepping control
     integrator = "rk4"
@@ -381,6 +383,10 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             nstatus = int(input_data["nstatus"])
+        except KeyError:
+            pass
+        try:
+            nlimit = int(input_data["nlimit"])
         except KeyError:
             pass
         try:
@@ -566,6 +572,10 @@ def main(ctx_factory=cl.create_some_context,
     kappa = cp*mu/Pr
     init_temperature = 300.0
 
+    # don't allow limiting on flows without species
+    if nspecies == 0:
+        nlimit = 0
+
     # Turn off combustion unless EOS supports it
     if nspecies < 3:
         use_combustion = False
@@ -583,6 +593,8 @@ def main(ctx_factory=cl.create_some_context,
             print("\tpassive scalars to track air/fuel mixture, ideal gas eos")
         else:
             print("\tfull multi-species initialization with pyrometheus eos")
+        if nlimit > 0:
+            print(f"\nSpecies mass fractions limited to [0:1] every {nlimit} steps")
 
     #spec_diffusivity = 0. * np.ones(nspecies)
     spec_diffusivity = spec_diff * np.ones(nspecies)
@@ -1071,7 +1083,7 @@ def main(ctx_factory=cl.create_some_context,
                     state.species_diffusivity
                 )
 
-        return(
+        return (
             length_scales / (state.wavespeed
             + ((nu + d_alpha_max + alpha) / length_scales))
         )
@@ -1123,6 +1135,23 @@ def main(ctx_factory=cl.create_some_context,
 
     sc_scale = get_sc_scale_compiled()
 
+    def limiter(cv, temp=None):
+        spec_lim = make_obj_array([
+            bound_preserving_limiter(discr, cv.species_mass_fractions[i],
+                                     mmin=0.0, mmax=1.0)
+            for i in range(nspecies)
+        ])
+
+        kin_energy = 0.5*np.dot(cv.velocity, cv.velocity)
+
+        energy_lim = cv.mass*(
+            gas_model.eos.get_internal_energy(temp, species_mass_fractions=spec_lim)
+            + kin_energy
+        )
+
+        return make_conserved(dim=dim, mass=cv.mass, energy=energy_lim,
+                              momentum=cv.momentum, species_mass=cv.mass*spec_lim)
+
     def my_pre_step(step, t, dt, state):
 
         try:
@@ -1133,10 +1162,15 @@ def main(ctx_factory=cl.create_some_context,
             do_restart = check_step(step=step, interval=nrestart)
             do_health = check_step(step=step, interval=nhealth)
             do_status = check_step(step=step, interval=nstatus)
+            do_limit = check_step(step=step, interval=nlimit)
 
-            if any([do_viz, do_restart, do_health, do_status]):
+            if any([do_viz, do_restart, do_health, do_status, do_limit]):
                 cv, tseed = state
-                fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
+                if do_limit:
+                    fluid_state = create_fluid_state(cv=limiter(cv, temp=tseed),
+                                                     temperature_seed=tseed)
+                else:
+                    fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
                 # if the time integrator didn't force_eval, do so now
                 if not force_eval:
                     fluid_state = force_evaluation(actx, fluid_state)

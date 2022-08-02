@@ -221,7 +221,7 @@ def get_theta_from_data(data):
                           (data[index+1][0]-data[index-1][0]))
     theta[0][1] = np.arctan(data[1][1]-data[0][1])/(data[1][0]-data[0][0])
     theta[-1][1] = np.arctan(data[-1][1]-data[-2][1])/(data[-1][0]-data[-2][0])
-    return(theta)
+    return theta
 
 
 class InitACTII:
