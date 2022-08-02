@@ -659,16 +659,21 @@ class InitACTII:
         # isothermal boundaries
         sigma = self._temp_sigma_injection
         wall_temperature = self._temp_wall
-        smoothing_top = actx.np.tanh(sigma*(actx.np.abs(ypos-self._inj_ytop)))
-        smoothing_bottom = actx.np.tanh(sigma*(actx.np.abs(ypos-self._inj_ybottom)))
+        if sigma > 0:
+            smoothing_top = actx.np.tanh(
+                sigma*(actx.np.abs(ypos - self._inj_ytop)))
+            smoothing_bottom = actx.np.tanh(
+                sigma*(actx.np.abs(ypos - self._inj_ybottom)))
 
-        if self._dim == 2:
-            inj_temperature = (wall_temperature +
-                (inj_temperature - wall_temperature)*smoothing_top*smoothing_bottom)
-        else:
-            smoothing_radius = actx.np.tanh(sigma*(actx.np.abs(radius - inj_radius)))
-            inj_temperature = (wall_temperature +
-                (inj_temperature - wall_temperature)*smoothing_radius)
+            if self._dim == 2:
+                inj_temperature = (wall_temperature +
+                    (inj_temperature - wall_temperature) *
+                    smoothing_top*smoothing_bottom)
+            else:
+                smoothing_radius = actx.np.tanh(
+                    sigma*(actx.np.abs(radius - inj_radius)))
+                inj_temperature = (wall_temperature +
+                    (inj_temperature - wall_temperature)*smoothing_radius)
 
         inj_mass = eos.get_density(pressure=inj_pressure,
                                    temperature=inj_temperature,
@@ -679,13 +684,17 @@ class InitACTII:
         # modify the velocity in the near-wall region to have a tanh profile
         # this approximates the BL velocity profile
         sigma = self._vel_sigma_injection
-        smoothing_top = actx.np.tanh(sigma*(actx.np.abs(ypos-self._inj_ytop)))
-        smoothing_bottom = actx.np.tanh(sigma*(actx.np.abs(ypos-self._inj_ybottom)))
-        if self._dim == 2:
-            inj_velocity[0] = inj_velocity[0]*smoothing_top*smoothing_bottom
-        else:
-            smoothing_radius = actx.np.tanh(sigma*(actx.np.abs(radius - inj_radius)))
-            inj_velocity[0] = inj_velocity[0]*smoothing_radius
+        if sigma > 0:
+            smoothing_top = actx.np.tanh(
+                sigma*(actx.np.abs(ypos - self._inj_ytop)))
+            smoothing_bottom = actx.np.tanh(
+                sigma*(actx.np.abs(ypos - self._inj_ybottom)))
+            if self._dim == 2:
+                inj_velocity[0] = inj_velocity[0]*smoothing_top*smoothing_bottom
+            else:
+                smoothing_radius = actx.np.tanh(
+                    sigma*(actx.np.abs(radius - inj_radius)))
+                inj_velocity[0] = inj_velocity[0]*smoothing_radius
 
         # use the species field with fuel added everywhere
         for i in range(self._nspecies):

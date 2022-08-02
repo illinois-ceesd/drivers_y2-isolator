@@ -633,7 +633,9 @@ surface_vector_full[7], // cavity front
 surface_vector_full[8], // cavity bottom
 surface_vector_full[9], // cavity slant
 surface_vector_full[10], // post cavity flat
-surface_vector_full[11], // expansion bottom
+surface_vector_full[11] // expansion bottom
+};
+Physical Surface('injector_wall') = {
 surface_vector_full[13] // injector wall
 };
 
