@@ -1138,7 +1138,7 @@ def main(ctx_factory=cl.create_some_context,
     def limiter(cv, temp=None):
         spec_lim = make_obj_array([
             bound_preserving_limiter(discr, cv.species_mass_fractions[i],
-                                     mmin=0.0, mmax=1.0)
+                                     modify_average=True, mmin=0.0, mmax=1.0)
             for i in range(nspecies)
         ])
 
