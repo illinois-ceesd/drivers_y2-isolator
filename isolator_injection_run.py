@@ -74,7 +74,9 @@ from mirgecom.boundary import (
     SymmetryBoundary
 )
 from mirgecom.eos import IdealSingleGas, PyrometheusMixture
-from mirgecom.transport import SimpleTransport
+from mirgecom.transport import (SimpleTransport,
+                                ArtificialViscosityTransport,
+                                ArtificialViscosityTransportDiv)
 from mirgecom.gas_model import GasModel, make_fluid_state
 from mirgecom.fluid import make_conserved
 from mirgecom.limiter import bound_preserving_limiter
@@ -342,8 +344,14 @@ def main(ctx_factory=cl.create_some_context,
     # rhs control
     use_ignition = False
     use_sponge = True
-    use_av = True
     use_combustion = True
+
+    # artificial viscosity control
+    #    0 - none
+    #    1 - laplacian diffusion
+    #    2 - physical viscosity based, rho indicator
+    #    3 - physical viscosity based, div(velocity) indicator
+    use_av = 0
 
     sponge_sigma = 1.0
     vel_sigma_inj = 5000
@@ -506,9 +514,32 @@ def main(ctx_factory=cl.create_some_context,
         force_eval = False
 
     s0_sc = np.log10(1.0e-4 / np.power(order, 4))
+
+    # use_av=3 specific parameters
+    # flow stagnation temperature
+    static_temp = 2076.43
+    # steepness of the smoothed function
+    theta_sc = 100
+    # cutoff, smoothness below this value is ignored
+    beta_sc = 0.01
+
     if rank == 0:
-        print(f"Shock capturing parameters: alpha {alpha_sc}, "
-              f"s0 {s0_sc}, kappa {kappa_sc}")
+        if use_av == 0:
+            print("Artificial viscosity disabled")
+        elif use_av == 1:
+            print("Artificial viscosity using laplacian diffusion")
+            print(f"Shock capturing parameters: alpha {alpha_sc}, "
+                  f"s0 {s0_sc}, kappa {kappa_sc}")
+        elif use_av == 2:
+            print("Artificial viscosity using modified physical viscosity")
+            print(f"Shock capturing parameters: alpha {alpha_sc}, "
+                  f"s0 {s0_sc}, Pr 0.75")
+        elif use_av == 3:
+            print("Artificial viscosity using modified physical viscosity")
+            print("Using velocity divergence indicator")
+            print(f"Shock capturing parameters: alpha {alpha_sc}, "
+                  f"theta_sc {theta_sc}, beta_sc {beta_sc}, Pr 0.75, "
+                  f"stagnation temperature {static_temp}")
 
     if rank == 0:
         print("\n#### Simluation control data: ####")
@@ -596,10 +627,20 @@ def main(ctx_factory=cl.create_some_context,
         if nlimit > 0:
             print(f"\nSpecies mass fractions limited to [0:1] every {nlimit} steps")
 
-    #spec_diffusivity = 0. * np.ones(nspecies)
     spec_diffusivity = spec_diff * np.ones(nspecies)
-    transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
-                                      species_diffusivity=spec_diffusivity)
+    physical_transport_model = SimpleTransport(
+        viscosity=mu, thermal_conductivity=kappa,
+        species_diffusivity=spec_diffusivity)
+    if use_av == 0 or use_av == 1:
+        transport_model = physical_transport_model
+    elif use_av == 2:
+        transport_model = ArtificialViscosityTransport(
+            physical_transport=physical_transport_model,
+            av_mu=alpha_sc, av_prandtl=0.75)
+    elif use_av == 3:
+        transport_model = ArtificialViscosityTransportDiv(
+            physical_transport=physical_transport_model,
+            av_mu=1.0, av_prandtl=0.75)
 
     # make the eos
     if nspecies < 3:
@@ -715,9 +756,10 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logging.info("Before restart/init")
 
-    def get_fluid_state(cv, temperature_seed):
+    def get_fluid_state(cv, temperature_seed, smoothness=None):
         return make_fluid_state(cv=cv, gas_model=gas_model,
-                                temperature_seed=temperature_seed)
+                                temperature_seed=temperature_seed,
+                                smoothness=smoothness)
 
     create_fluid_state = actx.compile(get_fluid_state)
 
@@ -728,6 +770,35 @@ def main(ctx_factory=cl.create_some_context,
             pyro_mech.get_temperature_update_energy(e, temperature, y))
 
     get_temperature_update_compiled = actx.compile(get_temperature_update)
+
+    from grudge.dt_utils import characteristic_lengthscales
+    length_scales = characteristic_lengthscales(actx, discr)
+
+    # compiled wrapper for grad_cv_operator
+    def _grad_cv_operator(fluid_state, time):
+        return grad_cv_operator(discr=discr, gas_model=gas_model,
+                                boundaries=boundaries,
+                                state=fluid_state,
+                                time=time,
+                                quadrature_tag=quadrature_tag)
+
+    grad_cv_operator_compiled = actx.compile(_grad_cv_operator) # noqa
+
+    def compute_smoothness(cv, grad_cv):
+
+        from mirgecom.fluid import velocity_gradient
+        div_v = np.trace(velocity_gradient(cv, grad_cv))
+
+        gamma = gas_model.eos.gamma(cv)
+        r = gas_model.eos.gas_const(cv)
+        c_star = np.sqrt(gamma*r*(2/(gamma+1)*static_temp))
+        indicator = -alpha_sc*length_scales*div_v/c_star
+
+        smoothness = actx.np.log(
+            1 + actx.np.exp(theta_sc*(indicator - beta_sc)))/theta_sc
+        return smoothness*alpha_sc*length_scales
+
+    compute_smoothness_compiled = actx.compile(compute_smoothness) # noqa
 
     if restart_filename:
         if rank == 0:
@@ -778,9 +849,20 @@ def main(ctx_factory=cl.create_some_context,
     else:
         target_cv = restart_cv
 
-    current_state = create_fluid_state(restart_cv, temperature_seed)
-    target_state = create_fluid_state(target_cv, temperature_seed)
+    smoothness = None
+    if use_av > 0:
+        smoothness = smoothness_indicator(discr, restart_cv.mass,
+                                          kappa=kappa_sc, s0=s0_sc)
+        no_smoothness = 0.*smoothness
+
+    current_state = make_fluid_state(restart_cv, gas_model, temperature_seed,
+                                     smoothness=smoothness)
+    target_state = make_fluid_state(target_cv, temperature_seed,
+                                      smoothness=no_smoothness)
     temperature_seed = current_state.temperature
+
+    force_evaluation(actx, current_state)
+    force_evaluation(actx, target_state)
 
     # if you divide by 2.355, 50% of the spark is within this diameter
     spark_diameter /= 2.355
@@ -871,9 +953,6 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info(init_message)
 
-    from grudge.dt_utils import characteristic_lengthscales
-    length_scales = characteristic_lengthscales(actx, discr)
-
     # some utility functions
     def vol_min_loc(x):
         from grudge.op import nodal_min_loc
@@ -941,9 +1020,7 @@ def main(ctx_factory=cl.create_some_context,
 
         cv = fluid_state.cv
         dv = fluid_state.dv
-
-        tagged_cells = smoothness_indicator(discr, cv.mass, s0=s0_sc,
-                                            kappa=kappa_sc)
+        mu = fluid_state.viscosity
 
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
                             dv.speed_of_sound)
@@ -955,7 +1032,7 @@ def main(ctx_factory=cl.create_some_context,
                       ("velocity", cv.velocity),
                       ("sponge_sigma", sponge_sigma),
                       ("alpha", alpha_field),
-                      ("tagged_cells", tagged_cells),
+                      ("mu", mu),
                       ("dt" if constant_cfl else "cfl", ts_field)]
         # species mass fractions
         viz_fields.extend(
@@ -1138,7 +1215,7 @@ def main(ctx_factory=cl.create_some_context,
     def limiter(cv, temp=None):
         spec_lim = make_obj_array([
             bound_preserving_limiter(discr, cv.species_mass_fractions[i],
-                                     mmin=0.0, mmax=1.0)
+                                     mmin=0.0, mmax=1.0, modify_average=True)
             for i in range(nspecies)
         ])
 
@@ -1167,10 +1244,41 @@ def main(ctx_factory=cl.create_some_context,
             if any([do_viz, do_restart, do_health, do_status, do_limit]):
                 cv, tseed = state
                 if do_limit:
-                    fluid_state = create_fluid_state(cv=limiter(cv, temp=tseed),
+                    cv = limiter(cv, temp=tseed)
+
+                if use_av == 0 or use_av == 1:
+                    fluid_state = create_fluid_state(cv=state,
                                                      temperature_seed=tseed)
-                else:
-                    fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
+                elif use_av == 2:
+                    smoothness = smoothness_indicator(discr, state.mass,
+                                                      kappa=kappa_sc, s0=s0_sc)
+                    force_evaluation(actx, smoothness)
+                    fluid_state = create_fluid_state(cv=state,
+                                                     smoothness=smoothness,
+                                                     temperature_seed=tseed)
+                elif use_av == 3:
+                    fluid_state = create_fluid_state(cv=state,
+                                                     smoothness=no_smoothness,
+                                                     temperature_seed=tseed)
+
+                    # recompute the dv to have the correct smoothness
+                    # this is forcing a recompile, only do it at dump time
+                    # not sure why the compiled version of grad_cv doesn't work
+                    if do_viz:
+                        # use the divergence to compute the smoothness field
+                        force_evaluation(actx, t)
+                        grad_cv = grad_cv_operator(
+                            discr, gas_model, boundaries, fluid_state,
+                            time=t, quadrature_tag=quadrature_tag)
+                        # grad_cv = grad_cv_operator_compiled(fluid_state,
+                        #                                     time=t)
+                        smoothness = compute_smoothness(state, grad_cv)
+
+                        from dataclasses import replace
+                        force_evaluation(actx, smoothness)
+                        new_dv = replace(fluid_state.dv, smoothness=smoothness)
+                        fluid_state = replace(fluid_state, dv=new_dv)
+
                 # if the time integrator didn't force_eval, do so now
                 if not force_eval:
                     fluid_state = force_evaluation(actx, fluid_state)
@@ -1217,8 +1325,31 @@ def main(ctx_factory=cl.create_some_context,
 
     def my_rhs(t, state):
         cv, tseed = state
-        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-                                       temperature_seed=tseed)
+
+        if use_av == 0 or use_av == 1:
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed)
+        elif use_av == 2:
+            smoothness = smoothness_indicator(
+                discr=discr, u=cv.mass, kappa=kappa_sc, s0=s0_sc)
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=smoothness)
+        elif use_av == 3:
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+
+            # use the divergence to compute the smoothness field
+            grad_fluid_cv = grad_cv_operator(
+                discr, gas_model, boundaries, fluid_state,
+                time=t, quadrature_tag=quadrature_tag)
+            smoothness = compute_smoothness(state, grad_fluid_cv)
+
+            from dataclasses import replace
+            new_dv = replace(fluid_state.dv, smoothness=smoothness)
+            fluid_state = replace(fluid_state, dv=new_dv)
+
         # Temperature seed RHS (keep tseed updated)
         tseed_rhs = fluid_state.temperature - tseed
 
@@ -1226,10 +1357,11 @@ def main(ctx_factory=cl.create_some_context,
         operator_fluid_states = make_operator_fluid_states(
             discr, fluid_state, gas_model, boundaries, quadrature_tag)
 
-        grad_fluid_cv = grad_cv_operator(
-            discr, gas_model, boundaries, fluid_state,
-            quadrature_tag=quadrature_tag,
-            operator_states_quad=operator_fluid_states)
+        if use_av != 3:
+            grad_fluid_cv = grad_cv_operator(
+                discr, gas_model, boundaries, fluid_state,
+                quadrature_tag=quadrature_tag,
+                operator_states_quad=operator_fluid_states)
 
         # Fluid CV RHS contributions
         ns_rhs = \
@@ -1244,7 +1376,7 @@ def main(ctx_factory=cl.create_some_context,
                 eos.get_species_source_terms(cv, temperature=fluid_state.temperature)
 
         av_rhs = 0*cv
-        if use_av:
+        if use_av == 1:
             alpha_field = sc_scale * fluid_state.speed
             av_rhs = \
                 av_laplacian_operator(discr, fluid_state=fluid_state,
@@ -1275,12 +1407,39 @@ def main(ctx_factory=cl.create_some_context,
                       t=current_t, t_final=t_final,
                       force_eval=force_eval,
                       state=make_obj_array([current_state.cv, temperature_seed]))
+
     current_cv, tseed = stepper_state
     current_state = create_fluid_state(current_cv, tseed)
 
     # Dump the final data
     if rank == 0:
         logger.info("Checkpointing final state ...")
+
+    if use_av == 0 or use_av == 1:
+        current_state = create_fluid_state(cv=current_cv,
+                                           temperature_seed=tseed)
+    elif use_av == 2:
+        smoothness = smoothness_indicator(discr, current_cv.mass,
+                                          kappa=kappa_sc, s0=s0_sc)
+        current_state = create_fluid_state(cv=current_cv,
+                                           temperature_seed=tseed,
+                                           smoothness=smoothness)
+    elif use_av == 3:
+        current_state = create_fluid_state(cv=current_cv,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+
+        # use the divergence to compute the smoothness field
+        current_grad_cv = grad_cv_operator(
+            discr, gas_model, boundaries, current_state, time=current_t,
+            quadrature_tag=quadrature_tag)
+        # smoothness = compute_smoothness_compiled(current_cv, grad_cv)
+        smoothness = compute_smoothness(current_cv, current_grad_cv)
+
+        from dataclasses import replace
+        new_dv = replace(current_state.dv, smoothness=smoothness)
+        current_state = replace(current_state, dv=new_dv)
+
     final_dv = current_state.dv
     alpha_field = my_get_alpha(current_state, alpha_sc)
     ts_field, cfl, dt = my_get_timestep(t=current_t, dt=current_dt,
