@@ -306,7 +306,7 @@ def main(ctx_factory=cl.create_some_context,
     nhealth = 1
     nrestart = 5000
     nstatus = 1
-    nlimit = 0
+    nlimit = 1e9
 
     # default timestepping control
     integrator = "rk4"
@@ -605,7 +605,7 @@ def main(ctx_factory=cl.create_some_context,
 
     # don't allow limiting on flows without species
     if nspecies == 0:
-        nlimit = 0
+        nlimit = 1e9
 
     # Turn off combustion unless EOS supports it
     if nspecies < 3:
@@ -849,16 +849,19 @@ def main(ctx_factory=cl.create_some_context,
     else:
         target_cv = restart_cv
 
-    smoothness = None
+    no_smoothness = 0.*restart_cv.mass
+    smoothness = no_smoothness
+    target_smoothness = smoothness
     if use_av > 0:
         smoothness = smoothness_indicator(discr, restart_cv.mass,
                                           kappa=kappa_sc, s0=s0_sc)
-        no_smoothness = 0.*smoothness
+        target_smoothness = smoothness_indicator(discr, target_cv.mass,
+                                                 kappa=kappa_sc, s0=s0_sc)
 
     current_state = make_fluid_state(restart_cv, gas_model, temperature_seed,
                                      smoothness=smoothness)
-    target_state = make_fluid_state(target_cv, temperature_seed,
-                                      smoothness=no_smoothness)
+    target_state = make_fluid_state(target_cv, gas_model, temperature_seed,
+                                    smoothness=target_smoothness)
     temperature_seed = current_state.temperature
 
     force_evaluation(actx, current_state)
@@ -1022,6 +1025,11 @@ def main(ctx_factory=cl.create_some_context,
         dv = fluid_state.dv
         mu = fluid_state.viscosity
 
+        smoothness = dv.smoothness
+        if use_av == 1:
+            smoothness = smoothness_indicator(discr, cv.mass, s0=s0_sc,
+                                              kappa=kappa_sc)
+
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
                             dv.speed_of_sound)
 
@@ -1032,6 +1040,7 @@ def main(ctx_factory=cl.create_some_context,
                       ("velocity", cv.velocity),
                       ("sponge_sigma", sponge_sigma),
                       ("alpha", alpha_field),
+                      ("indicator", smoothness),
                       ("mu", mu),
                       ("dt" if constant_cfl else "cfl", ts_field)]
         # species mass fractions
@@ -1247,17 +1256,18 @@ def main(ctx_factory=cl.create_some_context,
                     cv = limiter(cv, temp=tseed)
 
                 if use_av == 0 or use_av == 1:
-                    fluid_state = create_fluid_state(cv=state,
+                    fluid_state = create_fluid_state(cv=cv,
+                                                     smoothness=no_smoothness,
                                                      temperature_seed=tseed)
                 elif use_av == 2:
-                    smoothness = smoothness_indicator(discr, state.mass,
+                    smoothness = smoothness_indicator(discr, cv.mass,
                                                       kappa=kappa_sc, s0=s0_sc)
                     force_evaluation(actx, smoothness)
-                    fluid_state = create_fluid_state(cv=state,
+                    fluid_state = create_fluid_state(cv=cv,
                                                      smoothness=smoothness,
                                                      temperature_seed=tseed)
                 elif use_av == 3:
-                    fluid_state = create_fluid_state(cv=state,
+                    fluid_state = create_fluid_state(cv=cv,
                                                      smoothness=no_smoothness,
                                                      temperature_seed=tseed)
 
@@ -1272,12 +1282,16 @@ def main(ctx_factory=cl.create_some_context,
                             time=t, quadrature_tag=quadrature_tag)
                         # grad_cv = grad_cv_operator_compiled(fluid_state,
                         #                                     time=t)
-                        smoothness = compute_smoothness(state, grad_cv)
+                        smoothness = compute_smoothness(cv, grad_cv)
 
+                        # avoid recomputation of temperature
                         from dataclasses import replace
                         force_evaluation(actx, smoothness)
                         new_dv = replace(fluid_state.dv, smoothness=smoothness)
                         fluid_state = replace(fluid_state, dv=new_dv)
+                        new_tv = gas_model.transport.transport_vars(
+                            cv=state, dv=new_dv, eos=gas_model.eos)
+                        fluid_state = replace(fluid_state, tv=new_tv)
 
                 # if the time integrator didn't force_eval, do so now
                 if not force_eval:
@@ -1312,7 +1326,7 @@ def main(ctx_factory=cl.create_some_context,
             my_write_restart(step=step, t=t, cv=cv, temperature_seed=tseed)
             raise
 
-        return state, dt
+        return make_obj_array([cv, tseed]), dt
 
     def my_post_step(step, t, dt, state):
         if logmgr:
@@ -1328,7 +1342,8 @@ def main(ctx_factory=cl.create_some_context,
 
         if use_av == 0 or use_av == 1:
             fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-                                           temperature_seed=tseed)
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
         elif use_av == 2:
             smoothness = smoothness_indicator(
                 discr=discr, u=cv.mass, kappa=kappa_sc, s0=s0_sc)
@@ -1349,6 +1364,9 @@ def main(ctx_factory=cl.create_some_context,
             from dataclasses import replace
             new_dv = replace(fluid_state.dv, smoothness=smoothness)
             fluid_state = replace(fluid_state, dv=new_dv)
+            new_tv = gas_model.transport.transport_vars(
+                cv=cv, dv=new_dv, eos=gas_model.eos)
+            fluid_state = replace(fluid_state, tv=new_tv)
 
         # Temperature seed RHS (keep tseed updated)
         tseed_rhs = fluid_state.temperature - tseed
@@ -1409,7 +1427,6 @@ def main(ctx_factory=cl.create_some_context,
                       state=make_obj_array([current_state.cv, temperature_seed]))
 
     current_cv, tseed = stepper_state
-    current_state = create_fluid_state(current_cv, tseed)
 
     # Dump the final data
     if rank == 0:
@@ -1417,6 +1434,7 @@ def main(ctx_factory=cl.create_some_context,
 
     if use_av == 0 or use_av == 1:
         current_state = create_fluid_state(cv=current_cv,
+                                           smoothness=no_smoothness,
                                            temperature_seed=tseed)
     elif use_av == 2:
         smoothness = smoothness_indicator(discr, current_cv.mass,
