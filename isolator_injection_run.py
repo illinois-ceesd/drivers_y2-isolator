@@ -309,7 +309,7 @@ def main(ctx_factory=cl.create_some_context,
     nhealth = 1
     nrestart = 5000
     nstatus = 1
-    nlimit = 1e9
+    nlimit = 1
 
     # default timestepping control
     integrator = "rk4"
@@ -610,7 +610,14 @@ def main(ctx_factory=cl.create_some_context,
 
     # don't allow limiting on flows without species
     if nspecies == 0:
-        nlimit = 1e9
+        nlimit = 0
+
+    limit_species = False
+    if nlimit > 0:
+        species_limit_sigma = 1./nlimit/current_dt
+        limit_species = True
+    else:
+        species_limit_sigma = 0.
 
     # Turn off combustion unless EOS supports it
     if nspecies < 3:
@@ -630,7 +637,7 @@ def main(ctx_factory=cl.create_some_context,
         else:
             print("\tfull multi-species initialization with pyrometheus eos")
         if nlimit > 0:
-            print(f"\nSpecies mass fractions limited to [0:1] every {nlimit} steps")
+            print(f"\nSpecies mass fractions limited to [0:1] over {nlimit} steps")
 
     spec_diffusivity = spec_diff * np.ones(nspecies)
     physical_transport_model = SimpleTransport(
@@ -1058,13 +1065,14 @@ def main(ctx_factory=cl.create_some_context,
             smoothness = smoothness_indicator(discr, cv.mass, s0=s0_sc,
                                               kappa=kappa_sc)
 
+        grad_cv = grad_cv_operator(discr, gas_model, boundaries,
+                                   fluid_state, time=current_t,
+                                   quadrature_tag=quadrature_tag)
+        from mirgecom.fluid import velocity_gradient
+        grad_v = velocity_gradient(cv, grad_cv)
+        div_v = np.trace(velocity_gradient(cv, grad_cv))
+
         if use_av == 3:
-            grad_cv = grad_cv_operator(discr, gas_model, boundaries,
-                                       fluid_state, time=current_t,
-                                       quadrature_tag=quadrature_tag)
-            from mirgecom.fluid import velocity_gradient
-            grad_v = velocity_gradient(cv, grad_cv)
-            div_v = np.trace(velocity_gradient(cv, grad_cv))
 
             gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
             r = gas_model.eos.gas_const(cv)
@@ -1268,24 +1276,22 @@ def main(ctx_factory=cl.create_some_context,
 
     sc_scale = get_sc_scale_compiled()
 
-    def limiter(cv, temp=None):
+    def limit_species_source(cv, species_enthalpies):
         spec_lim = make_obj_array([
             bound_preserving_limiter(discr, cv.species_mass_fractions[i],
                                      mmin=0.0, mmax=1.0, modify_average=True)
             for i in range(nspecies)
         ])
 
-        kin_energy = 0.5*np.dot(cv.velocity, cv.velocity)
+        spec_lim_source = species_limit_sigma*(spec_lim - cv.species_mass_fractions)
+        energy_lim_source = 0.*cv.mass
+        for i in range(nspecies):
+            energy_lim_source = (energy_lim_source +
+                spec_lim_source[i]*cv.mass*species_enthalpies[i])
 
-        energy_lim = cv.mass*(
-            gas_model.eos.get_internal_energy(temp, species_mass_fractions=spec_lim)
-            + kin_energy
-        )
-
-        return make_conserved(dim=dim, mass=cv.mass, energy=energy_lim,
-                              momentum=cv.momentum, species_mass=cv.mass*spec_lim)
-
-    limiter_compiled = actx.compile(limiter)
+        return make_conserved(dim=dim, mass=cv.mass, energy=energy_lim_source,
+                              momentum=cv.momentum,
+                              species_mass=cv.mass*spec_lim_source)
 
     def my_pre_step(step, t, dt, state):
 
@@ -1301,8 +1307,6 @@ def main(ctx_factory=cl.create_some_context,
 
             if any([do_viz, do_restart, do_health, do_status, do_limit]):
                 cv, tseed = state
-                if do_limit:
-                    cv = limiter_compiled(cv=cv, temp=tseed)
 
                 if use_av == 0 or use_av == 1:
                     fluid_state = create_fluid_state(cv=cv,
@@ -1377,7 +1381,7 @@ def main(ctx_factory=cl.create_some_context,
             my_write_restart(step=step, t=t, cv=cv, temperature_seed=tseed)
             raise
 
-        return make_obj_array([cv, tseed]), dt
+        return state, dt
 
     def my_post_step(step, t, dt, state):
         if logmgr:
@@ -1456,11 +1460,17 @@ def main(ctx_factory=cl.create_some_context,
         if use_sponge:
             sponge_rhs = _sponge_source(cv=cv)
 
+        limit_species_rhs = 0*cv
+        if limit_species:
+            limit_species_rhs = limit_species_source(
+                cv, fluid_state.species_enthalpies)
+
         ignition_rhs = 0*cv
         if use_ignition:
             ignition_rhs = ignition_source(x_vec=x_vec, cv=cv, time=t)
 
-        cv_rhs = ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs
+        cv_rhs = (ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs +
+                  limit_species_rhs)
         return make_obj_array([cv_rhs, tseed_rhs])
 
     current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
