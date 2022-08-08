@@ -1303,9 +1303,8 @@ def main(ctx_factory=cl.create_some_context,
             do_restart = check_step(step=step, interval=nrestart)
             do_health = check_step(step=step, interval=nhealth)
             do_status = check_step(step=step, interval=nstatus)
-            do_limit = check_step(step=step, interval=nlimit)
 
-            if any([do_viz, do_restart, do_health, do_status, do_limit]):
+            if any([do_viz, do_restart, do_health, do_status]):
                 cv, tseed = state
 
                 if use_av == 0 or use_av == 1:
