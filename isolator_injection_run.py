@@ -1054,6 +1054,11 @@ def main(ctx_factory=cl.create_some_context,
         if rank == 0:
             logger.info(status_msg)
 
+    def get_production_rates(cv, temperature):
+        return eos.get_production_rates(cv, temperature)
+
+    compute_production_rates = actx.compile(get_production_rates)
+
     def my_write_viz(step, t, fluid_state, ts_field, alpha_field):
 
         cv = fluid_state.cv
@@ -1086,6 +1091,9 @@ def main(ctx_factory=cl.create_some_context,
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
                             dv.speed_of_sound)
 
+        production_rates = compute_production_rates(fluid_state.cv,
+                                                    fluid_state.temperature)
+
         viz_fields = [("cv", cv),
                       ("dv", dv),
                       ("mach", mach),
@@ -1097,6 +1105,7 @@ def main(ctx_factory=cl.create_some_context,
                       ("alpha", alpha_field),
                       ("indicator", smoothness),
                       ("mu", mu),
+                      ("production_rates", production_rates),
                       ("dt" if constant_cfl else "cfl", ts_field)]
         # species mass fractions
         viz_fields.extend(
@@ -1276,12 +1285,24 @@ def main(ctx_factory=cl.create_some_context,
 
     sc_scale = get_sc_scale_compiled()
 
-    def limit_species_source(cv, species_enthalpies):
+    def limit_species_source(cv, temperature, species_enthalpies):
         spec_lim = make_obj_array([
             bound_preserving_limiter(discr, cv.species_mass_fractions[i],
                                      mmin=0.0, mmax=1.0, modify_average=True)
             for i in range(nspecies)
         ])
+
+        kin_energy = 0.5*np.dot(cv.velocity, cv.velocity)
+
+        energy_lim = cv.mass*(
+            gas_model.eos.get_internal_energy(temperature,
+                                              species_mass_fractions=spec_lim)
+            + kin_energy
+        )
+
+        cv_limited = make_conserved(dim=dim, mass=cv.mass, energy=energy_lim,
+                                    momentum=cv.momentum,
+                                    species_mass=cv.mass*spec_lim)
 
         spec_lim_source = species_limit_sigma*(spec_lim - cv.species_mass_fractions)
         energy_lim_source = 0.*cv.mass
@@ -1289,9 +1310,11 @@ def main(ctx_factory=cl.create_some_context,
             energy_lim_source = (energy_lim_source +
                 spec_lim_source[i]*cv.mass*species_enthalpies[i])
 
-        return make_conserved(dim=dim, mass=cv.mass, energy=energy_lim_source,
-                              momentum=cv.momentum,
-                              species_mass=cv.mass*spec_lim_source)
+        cv_limited_source = make_conserved(
+            dim=dim, mass=cv.mass, energy=energy_lim_source, momentum=cv.momentum,
+            species_mass=cv.mass*spec_lim_source)
+
+        return cv_limited, cv_limited_source
 
     def my_pre_step(step, t, dt, state):
 
@@ -1391,6 +1414,15 @@ def main(ctx_factory=cl.create_some_context,
     def my_rhs(t, state):
         cv, tseed = state
 
+        limit_species_rhs = 0*cv
+        if limit_species:
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+            cv, limit_species_rhs = limit_species_source(
+                cv=cv, temperature=fluid_state.temperature,
+                species_enthalpies=fluid_state.species_enthalpies)
+
         if use_av == 0 or use_av == 1:
             fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
                                            temperature_seed=tseed,
@@ -1458,11 +1490,6 @@ def main(ctx_factory=cl.create_some_context,
         sponge_rhs = 0*cv
         if use_sponge:
             sponge_rhs = _sponge_source(cv=cv)
-
-        limit_species_rhs = 0*cv
-        if limit_species:
-            limit_species_rhs = limit_species_source(
-                cv, fluid_state.species_enthalpies)
 
         ignition_rhs = 0*cv
         if use_ignition:
