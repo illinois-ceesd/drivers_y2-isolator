@@ -309,7 +309,7 @@ def main(ctx_factory=cl.create_some_context,
     nhealth = 1
     nrestart = 5000
     nstatus = 1
-    nlimit = 1
+    nlimit = 0
 
     # default timestepping control
     integrator = "rk4"
