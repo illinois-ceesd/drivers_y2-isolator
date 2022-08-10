@@ -799,12 +799,12 @@ def main(ctx_factory=cl.create_some_context,
     def compute_smoothness(cv, dv, grad_cv):
 
         from mirgecom.fluid import velocity_gradient
-        div_v = np.trace(velocity_gradient(cv, grad_cv))
+        div_v = actx.np.abs(np.trace(velocity_gradient(cv, grad_cv)))
 
         gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
         r = gas_model.eos.gas_const(cv)
         c_star = actx.np.sqrt(gamma*r*(2/(gamma+1)*static_temp))
-        indicator = -gamma_sc*length_scales*div_v/c_star
+        indicator = gamma_sc*length_scales*div_v/c_star
 
         smoothness = actx.np.log(
             1 + actx.np.exp(theta_sc*(indicator - beta_sc)))/theta_sc
@@ -1082,17 +1082,13 @@ def main(ctx_factory=cl.create_some_context,
             gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
             r = gas_model.eos.gas_const(cv)
             c_star = actx.np.sqrt(gamma*r*(2/(gamma+1)*static_temp))
-            indicator = -alpha_sc*length_scales*div_v/c_star
+            indicator = -alpha_sc*length_scales*actx.np.abs(div_v)/c_star
 
             # make a smoothness indicator
-            #smoothness = compute_smoothness(cv, dv, grad_cv)
-            smoothness = indicator
+            smoothness = compute_smoothness(cv, dv, grad_cv)
 
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
                             dv.speed_of_sound)
-
-        production_rates = compute_production_rates(fluid_state.cv,
-                                                    fluid_state.temperature)
 
         viz_fields = [("cv", cv),
                       ("dv", dv),
@@ -1101,11 +1097,12 @@ def main(ctx_factory=cl.create_some_context,
                       ("velocity", cv.velocity),
                       ("grad_v_x", grad_v[0]),
                       ("grad_v_y", grad_v[1]),
+                      ("div_v", div_v),
                       ("sponge_sigma", sponge_sigma),
                       ("alpha", alpha_field),
-                      ("indicator", smoothness),
+                      ("indicator", indicator),
+                      ("smoothness", smoothness),
                       ("mu", mu),
-                      ("production_rates", production_rates),
                       ("dt" if constant_cfl else "cfl", ts_field)]
         # species mass fractions
         viz_fields.extend(
@@ -1115,7 +1112,10 @@ def main(ctx_factory=cl.create_some_context,
         if nspecies > 2:
             temp_resid = get_temperature_update_compiled(
                 cv, dv.temperature)/dv.temperature
-            viz_ext = [("temp_resid", temp_resid)]
+            production_rates = compute_production_rates(fluid_state.cv,
+                                                        fluid_state.temperature)
+            viz_ext = [("temp_resid", temp_resid),
+                       ("production_rates", production_rates)]
             viz_fields.extend(viz_ext)
 
         # additional viz quantities, add in some non-dimensional numbers
