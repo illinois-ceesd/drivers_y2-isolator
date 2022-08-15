@@ -1066,6 +1066,7 @@ def main(ctx_factory=cl.create_some_context,
         mu = fluid_state.viscosity
 
         smoothness = dv.smoothness
+        indicator = no_smoothness
         if use_av == 1:
             smoothness = smoothness_indicator(discr, cv.mass, s0=s0_sc,
                                               kappa=kappa_sc)
@@ -1285,7 +1286,7 @@ def main(ctx_factory=cl.create_some_context,
 
     sc_scale = get_sc_scale_compiled()
 
-    def limit_species_source(cv, temperature, species_enthalpies):
+    def limit_species_source(cv, pressure, temperature, species_enthalpies):
         spec_lim = make_obj_array([
             bound_preserving_limiter(discr, cv.species_mass_fractions[i],
                                      mmin=0.0, mmax=1.0, modify_average=True)
@@ -1294,15 +1295,20 @@ def main(ctx_factory=cl.create_some_context,
 
         kin_energy = 0.5*np.dot(cv.velocity, cv.velocity)
 
-        energy_lim = cv.mass*(
+        mass_lim = eos.get_density(pressure=pressure, temperature=temperature,
+                                   species_mass_fractions=spec_lim)
+
+        energy_lim = mass_lim*(
             gas_model.eos.get_internal_energy(temperature,
                                               species_mass_fractions=spec_lim)
             + kin_energy
         )
 
-        cv_limited = make_conserved(dim=dim, mass=cv.mass, energy=energy_lim,
-                                    momentum=cv.momentum,
-                                    species_mass=cv.mass*spec_lim)
+        mom_lim = mass_lim*cv.velocity
+
+        cv_limited = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                                    momentum=mom_lim,
+                                    species_mass=mass_lim*spec_lim)
 
         spec_lim_source = species_limit_sigma*(spec_lim - cv.species_mass_fractions)
         energy_lim_source = 0.*cv.mass
@@ -1420,7 +1426,8 @@ def main(ctx_factory=cl.create_some_context,
                                            temperature_seed=tseed,
                                            smoothness=no_smoothness)
             cv, limit_species_rhs = limit_species_source(
-                cv=cv, temperature=fluid_state.temperature,
+                cv=cv, pressure=fluid_state.pressure,
+                temperature=fluid_state.temperature,
                 species_enthalpies=fluid_state.species_enthalpies)
 
         if use_av == 0 or use_av == 1:
