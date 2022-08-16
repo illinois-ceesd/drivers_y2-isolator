@@ -120,12 +120,13 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
+    from mirgecom.simutil import get_reasonable_memory_pool
+    alloc = get_reasonable_memory_pool(cl_ctx, queue)
+
     if lazy:
-        actx = actx_class(comm, queue, mpi_base_tag=12000)
+        actx = actx_class(comm, queue, mpi_base_tag=12000, allocator=alloc)
     else:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                force_device_scalars=True)
+        actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
 
     # discretization and model control
     order = 1
@@ -355,7 +356,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         write_restart_file(actx, restart_data, restart_fname, comm)
 
     # write visualization and restart data
-    my_write_viz(step=current_step, t=current_t, 
+    my_write_viz(step=current_step, t=current_t,
                  cv=current_state.cv, dv=current_state.dv)
     my_write_restart(step=current_step, t=current_t, cv=current_state.cv,
                      temperature_seed=current_state.dv.temperature)
