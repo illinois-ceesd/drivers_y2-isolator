@@ -799,12 +799,13 @@ def main(ctx_factory=cl.create_some_context,
     def compute_smoothness(cv, dv, grad_cv):
 
         from mirgecom.fluid import velocity_gradient
-        div_v = actx.np.abs(np.trace(velocity_gradient(cv, grad_cv)))
+        #div_v = actx.np.abs(np.trace(velocity_gradient(cv, grad_cv)))
+        div_v = np.trace(velocity_gradient(cv, grad_cv))
 
         gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
         r = gas_model.eos.gas_const(cv)
         c_star = actx.np.sqrt(gamma*r*(2/(gamma+1)*static_temp))
-        indicator = gamma_sc*length_scales*div_v/c_star
+        indicator = -gamma_sc*length_scales*div_v/c_star
 
         smoothness = actx.np.log(
             1 + actx.np.exp(theta_sc*(indicator - beta_sc)))/theta_sc
@@ -1065,6 +1066,12 @@ def main(ctx_factory=cl.create_some_context,
         dv = fluid_state.dv
         mu = fluid_state.viscosity
 
+        if limit_species:
+            cv_limited, limit_species_rhs = limit_species_source(
+                cv=cv, pressure=fluid_state.pressure,
+                temperature=fluid_state.temperature,
+                species_enthalpies=fluid_state.species_enthalpies)
+
         smoothness = dv.smoothness
         indicator = no_smoothness
         if use_av == 1:
@@ -1083,7 +1090,8 @@ def main(ctx_factory=cl.create_some_context,
             gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
             r = gas_model.eos.gas_const(cv)
             c_star = actx.np.sqrt(gamma*r*(2/(gamma+1)*static_temp))
-            indicator = -alpha_sc*length_scales*actx.np.abs(div_v)/c_star
+            #indicator = -alpha_sc*length_scales*actx.np.abs(div_v)/c_star
+            indicator = -alpha_sc*length_scales*div_v/c_star
 
             # make a smoothness indicator
             smoothness = compute_smoothness(cv, dv, grad_cv)
@@ -1109,6 +1117,11 @@ def main(ctx_factory=cl.create_some_context,
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
+
+        if limit_species:
+            viz_ext = [("cv_limited", cv_limited),
+                      ("limit_source", limit_species_rhs)]
+            viz_fields.extend(viz_ext)
 
         if nspecies > 2:
             temp_resid = get_temperature_update_compiled(
@@ -1292,6 +1305,13 @@ def main(ctx_factory=cl.create_some_context,
                                      mmin=0.0, mmax=1.0, modify_average=True)
             for i in range(nspecies)
         ])
+
+        # limit the sum to 1.0
+        #spec_lim = spec_lim/actx.np.sum(spec_lim)
+        aux = cv.mass*0.0
+        for i in range(nspecies):
+            aux = aux + spec_lim[i]
+        spec_lim = spec_lim/aux
 
         kin_energy = 0.5*np.dot(cv.velocity, cv.velocity)
 
