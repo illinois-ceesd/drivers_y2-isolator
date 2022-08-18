@@ -2,15 +2,15 @@ nviz: 1
 nrestart: 1000
 nhealth: 1
 nstatus: 1
-current_dt: 1.0e-8
+current_dt: 5.0e-9
 t_final: 2e-7
 order:  1
 dimen: 2
-mach_inj: 1.0
-total_pres_inj: 40000
+mach_inj: 0.8
+total_pres_inj: 10000
 total_temp_inj: 300
-#nspecies: 7
-nspecies: 2
+nspecies: 7
+#nspecies: 2
 #nspecies: 0
 ### av settings ###
 #use_av: 0
@@ -29,7 +29,8 @@ kappa_sc: 0.5
 s0_sc: -5.0
 use_sponge: False
 sponge_sigma: 0.
+integrator: compiled_lsrk54
 #integrator: lsrk54
-integrator: euler
+#integrator: euler
 health_pres_min: 10
 health_pres_max: 2.e7

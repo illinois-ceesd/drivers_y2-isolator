@@ -49,6 +49,7 @@ EndIf
 
 // boundary layer thickness
 bl_thickness = 0.0015;
+bl_thickness_inj = 0.00035;
 
 // horizontal injection
 cavityAngle=45;
@@ -548,10 +549,17 @@ Point(458) = {0.65163+0.335,-0.008324-(0.265-0.02)*Sin(2*Pi/180)+bl_thickness,0.
 //Point(502) = {0.70163+inj_h*Tan(cavityAngle*Pi/180)+inj_d, -0.0283245+inj_h+inj_t, 0., basesize};
 //Point(503) = {0.70163+(inj_h+inj_t)*Tan(cavityAngle*Pi/180), -0.0283245+inj_h+inj_t, 0., basesize};
 
+// points on the injector
 Point(500) = {0.70163+inj_h, -0.0283245+inj_h, 0., basesize};
 Point(501) = {0.70163+inj_h+inj_d, -0.0283245+inj_h, 0., basesize};
 Point(502) = {0.70163+inj_h+inj_d, -0.0283245+inj_h+inj_t, 0., basesize};
 Point(503) = {0.70163+inj_h+inj_t, -0.0283245+inj_h+inj_t, 0., basesize};
+
+// points on the injector bl mesh
+Point(510) = {0.70163+inj_h, -0.0283245+inj_h+bl_thickness_inj, 0., basesize};
+Point(511) = {0.70163+inj_h+inj_d, -0.0283245+inj_h+bl_thickness_inj, 0., basesize};
+Point(512) = {0.70163+inj_h+inj_d, -0.0283245+inj_h+inj_t-bl_thickness_inj, 0., basesize};
+Point(513) = {0.70163+inj_h+inj_t, -0.0283245+inj_h+inj_t-bl_thickness_inj, 0., basesize};
 
 
 //Make Cavity lines
@@ -563,9 +571,20 @@ Line(453) = {503,453};
 Line(454) = {453,454};
 Line(455) = {454,455};
 // injector
-Line(501) = {500,501};
-Line(502) = {501,502};  // injector inlet
-Line(503) = {502,503};
+Line(501) = {500,501};  // injector bottom
+//Line(502) = {501,502};  // injector inlet
+Line(503) = {502,503};  // injector top
+
+// injector inlet
+Line(511) = {501,511};
+Line(512) = {511,512};
+Line(513) = {512,502};
+
+// injector outlet
+Line(521) = {500,510};
+Line(522) = {510,513};
+Line(523) = {513,503};
+
 //Outlet
 Line(471) = {457,456}; // top
 Line(470) = {458,457}; // middle
@@ -613,9 +632,9 @@ Curve Loop(1) = {
 // cavity
 Curve Loop(2) = {
 -453, // cavity rear upper (slant)
--503, // injector top
--502, // injector inlet
--501, // injector bottom
+-523, // injector face bl top
+-522, // injector face middle
+-521, // injector face bl bottom
 -500, // cavity rear lower (slant)
 -452, // cavity bottom
 -451, // cavity front
@@ -640,17 +659,30 @@ Curve Loop(3) = {
 -605
 };
 
+// injector
+Curve Loop(4) = {
+-503,
+-513,
+-512,
+-511,
+-501,
+-521,
+-522,
+-523
+};
+
 //Plane Surface(1) = {1,2,3};
 Plane Surface(1) = {1};
 Plane Surface(2) = {2};
 Plane Surface(3) = {3};
+Plane Surface(4) = {4};
 
-Physical Surface('domain') = {-1, -2, -3};
+Physical Surface('domain') = {-1, -2, -3, -4};
 
 Physical Curve('inflow') = {-423, -422, -424};
-Physical Curve('injection') = {-502};
+Physical Curve('injection') = {-513, -512, -511};
 Physical Curve('outflow') = {469, 470, 471};
-Physical Curve('flow') = {-423, -422, -424, -502, 470, 469, 471};
+Physical Curve('flow') = {-423, -422, -424, -512, 470, 469, 471, -513, -511};
 Physical Curve('wall') = {
 //1:211,
 1000,
@@ -835,6 +867,22 @@ Field[114].DistMin = 0.0002;
 Field[114].DistMax = bl_thickness;
 Field[114].StopAtDistMax = 1;
 
+// Create distance field from curves, injector bl regions
+Field[115] = Distance;
+Field[115].CurvesList = {511, 513, 521, 523};
+Field[115].NumPointsPerCurve = 10000;
+
+//Create threshold field that varrries element size near boundaries
+Field[116] = Threshold;
+Field[116].InField = 115;
+//Field[112].SizeMin = 0.0002;
+Field[116].SizeMin = injectorsize/boundratioinjector/2;
+Field[116].SizeMax = bigsize;
+Field[116].DistMin = 0.0002;
+Field[116].DistMax = bl_thickness_inj;
+Field[116].StopAtDistMax = 1;
+
+// isolator/combustor boundary layer mesh
 Field[20] = BoundaryLayer;
 //Field[20].CurvesList = {1000, 1001, 475};
 Field[20].CurvesList = {1000,1001,450,454,455,475,476,477};
@@ -844,11 +892,47 @@ Field[20].SizeFar = bigsize;
 //Field[20].IntersectMetrics = 1;
 Field[20].Thickness = bl_thickness;
 
-BoundaryLayer Field = 20;
+// injector boundary layer mesh
+Field[21] = BoundaryLayer;
+//Field[21].CurvesList = {501,503,513,511,521,523};
+Field[21].CurvesList = {501,503};
+//Field[20].Size = 0.0001;
+Field[21].Size = injectorsize/boundratioinjector/4;
+Field[21].SizeFar = bigsize;
+//Field[20].IntersectMetrics = 1;
+Field[21].Thickness = bl_thickness_inj;
+
+// a little finer at the upstream cavity corner
+Field[22] = Ball;
+Field[22].XCenter = 0.65163;
+Field[22].YCenter = -0.009;
+Field[22].Radius = bl_thickness;
+Field[22].Thickness = 0.1;
+Field[22].VIn = cavitysize/boundratiocavity/2;
+Field[22].VOut = bigsize;
+
+// a little finer at the injector corners
+Field[23] = Ball;
+Field[23].XCenter = 0.70163+inj_h;
+Field[23].YCenter = -0.0283245+inj_h;
+Field[23].Radius = bl_thickness_inj;
+Field[23].Thickness = 0.1;
+Field[23].VIn = injectorsize/boundratioinjector/2;
+Field[23].VOut = bigsize;
+
+Field[24] = Ball;
+Field[24].XCenter = 0.70163+inj_h+inj_t;
+Field[24].YCenter = -0.0283245+inj_h+inj_t;
+Field[24].Radius = bl_thickness_inj;
+Field[24].Thickness = 0.1;
+Field[24].VIn = injectorsize/boundratioinjector/2;
+Field[24].VOut = bigsize;
+
+BoundaryLayer Field = {20, 21};
 
 // take the minimum of all defined meshing fields
 Field[100] = Min;
-Field[100].FieldsList = {2, 3, 4, 5, 6, 7, 8, 12, 14, 112, 114};
+Field[100].FieldsList = {2, 3, 4, 5, 6, 7, 8, 12, 14, 22, 23, 24, 112, 114, 116};
 //Field[100].FieldsList = {20, 21};
 Background Field = 100;
 
@@ -856,7 +940,6 @@ Mesh.MeshSizeExtendFromBoundary = 0;
 Mesh.MeshSizeFromPoints = 0;
 Mesh.MeshSizeFromCurvature = 0;
 
-//Mesh.Smoothing = 3;
 Mesh.Algorithm = 5;
 Mesh.OptimizeNetgen = 1;
 Mesh.Smoothing = 100;

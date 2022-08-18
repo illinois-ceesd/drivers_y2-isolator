@@ -3,13 +3,13 @@ SetFactory("OpenCASCADE");
 If(Exists(size))
     basesize=size;
 Else
-    basesize=0.002;
+    basesize=0.0064;
 EndIf
 
 If(Exists(blratio))
     boundratio=blratio;
 Else
-    boundratio=2.0;
+    boundratio=4.0;
 EndIf
 
 If(Exists(blratiocavity))
@@ -27,25 +27,25 @@ EndIf
 If(Exists(injectorfac))
     injector_factor=injectorfac;
 Else
-    injector_factor=10.0;
+    injector_factor=4.0;
 EndIf
 
 If(Exists(shearfac))
     shear_factor=shearfac;
 Else
-    shear_factor=1.0;
+    shear_factor=4.0;
 EndIf
 
 If(Exists(isofac))
     iso_factor=isofac;
 Else
-    iso_factor=1.0;
+    iso_factor=2.0;
 EndIf
 
 If(Exists(cavityfac))
     cavity_factor=cavityfac;
 Else
-    cavity_factor=1.0;
+    cavity_factor=4.0;
 EndIf
 
 bigsize = basesize*4;     // the biggest mesh size 
@@ -54,6 +54,9 @@ isosize = basesize/iso_factor;       // background mesh size in the isolator
 nozzlesize = basesize/12;       // background mesh size in the nozzle
 cavitysize = basesize/cavity_factor; // background mesh size in the cavity region
 shearsize = isosize/shear_factor;
+
+// boundary layer thickness
+bl_thickness = 0.0015;
 
 inj_h=4.e-3;  // height of injector (bottom) from floor
 inj_t=1.59e-3; // diameter of injector
@@ -284,7 +287,7 @@ Point(209) = {0.3810622748815, 0.01167124243764, 0.0, basesize};
 Point(210) = {0.3818015165877, 0.01167371637508, 0.0, basesize};
 Point(211) = {0.3825407582938, 0.01167512605558, 0.0, basesize};
 Point(212) = {0.38328, 0.01167548819733, 0.0, basesize};
-Point(213) = {0.385, 0.01167548819733, 0.0, basesize};
+
 //Bottom Wall Back
 Point(1001) = {0.21, -0.0270645, 0.0, basesize};
 Point(1002) = {0.2280392417062, -0.0270645, 0.0, basesize};
@@ -497,19 +500,85 @@ Point(1208) = {0.3803230331754, -0.0083245, 0.0, basesize};
 Point(1209) = {0.3810622748815, -0.0083245, 0.0, basesize};
 Point(1210) = {0.3818015165877, -0.0083245, 0.0, basesize};
 Point(1211) = {0.38328, -0.0083245, 0.0, basesize};
-Point(1212) = {0.384, -0.0083245, 0.0, basesize};
-Point(1213) = {0.385, -0.0083245, 0.0, basesize};
+
+
+////Make Lines
+//Spline(1000) = {1:213};     //Top back
+//Spline(1001) = {1001:1213}; //Bottom back
+//
+//// Make the back surface
+//// Inlet
+//Line(400) = {1,1001};  //goes counter-clockwise
+//
+////Cavity Start
+//Point(450) = {0.65163,-0.0083245,0.0,basesize};
+//
+////Bottom of cavity
+//Point(451) = {0.65163,-0.0283245,0.0,basesize};
+//Point(452) = {0.70163,-0.0283245,0.0,basesize};
+//Point(453) = {0.72163,-0.0083245,0.0,basesize};
+//Point(454) = {0.72163+0.02,-0.0083245,0.0,basesize};
+//
+////Extend downstream a bit
+//Point(455) = {0.65163+0.335,-0.008324-(0.265-0.02)*Sin(2*Pi/180),0.0,basesize};
+//Point(456) = {0.65163+0.335,0.01167548819733,0.0,basesize};
+//
+////Make Cavity lines
+//Line(450) = {1213,450};
+//Line(451) = {450,451};
+//Line(452) = {451,452};
+//Line(453) = {452,453};
+//Line(454) = {453,454};
+//Line(455) = {454,455};
+//
+//// Outlet
+////Line(401) = {213,1213};  //goes counter-clockwise
+//Line(401) = {455,456};  //goes counter-clockwise
+//
+////Top wall
+//Line(457) = {456,213};  // goes counter-clockwise
+//
+////Create lineloop of this geometry
+//// start on the bottom left and go around clockwise
+////Curve Loop(1) = { 400, 1001, -401, -1000 }; Plane Surface(1) = {1}; // the back wall
+//Curve Loop(1) = { 
+//    -400, // inlet (2)
+//    1000, // top nozzle (3)
+//    -457, // top extension to end (4)
+//    -401, // outlet (5)
+//    -455, // bottom expansion (6)
+//    -454, // post-cavity flat (7)
+//    -453, // cavity rear (slant) (8)
+//    -452, // cavity bottom (9)
+//    -451, // cavity front (10)
+//    -450, // isolator to cavity (11)
+//    -1001 // bottom nozzle (12)
+//}; 
+//
+//Surface(1) = {1}; // the back wall
+
 
 //Make Lines
-Spline(1000) = {1:213};     //Top back
-Spline(1001) = {1001:1213}; //Bottom back
+//Top
+Spline(1000) = {1:212};  // goes clockwise
 
-// Make the back surface
-// Inlet
-Line(400) = {1,1001};  //goes counter-clockwise
+//Bottom Lines
+Spline(1001) = {1001:1211}; // goes counter-clockwise
+
+//top boundary layer on inlet
+Point(460) = {0.21, (0.0270645-bl_thickness),0.0,basesize};
+//bottom boundary layer on inlet
+Point(461) = {0.21, (-0.0270645+bl_thickness),0.0,basesize};
+//Inlet
+Line(422) = {1,460};  //goes counter-clockwise
+Line(423) = {460,461};  //goes counter-clockwise
+Line(424) = {461,1001};  //goes counter-clockwise
+//Line(458) = {1,460};
+//Line(459) = {460,213};
 
 //Cavity Start
 Point(450) = {0.65163,-0.0083245,0.0,basesize};
+
 
 //Bottom of cavity
 Point(451) = {0.65163,-0.0283245,0.0,basesize};
@@ -518,48 +587,106 @@ Point(453) = {0.72163,-0.0083245,0.0,basesize};
 Point(454) = {0.72163+0.02,-0.0083245,0.0,basesize};
 
 //Extend downstream a bit
+//Point(454) = {0.872163,-0.0083245,0.0,basesize};
+//Point(455) = {0.872163,0.01167548819733,0.0,basesize};
 Point(455) = {0.65163+0.335,-0.008324-(0.265-0.02)*Sin(2*Pi/180),0.0,basesize};
 Point(456) = {0.65163+0.335,0.01167548819733,0.0,basesize};
+// edges of the boundary layer on the outlet
+Point(457) = {0.65163+0.335,0.01167548819733-bl_thickness,0.0,basesize};
+Point(458) = {0.65163+0.335,-0.008324-(0.265-0.02)*Sin(2*Pi/180)+bl_thickness,0.0,basesize};
 
 //Make Cavity lines
-Line(450) = {1213,450};
+Line(450) = {1211,450};
 Line(451) = {450,451};
 Line(452) = {451,452};
 Line(453) = {452,453};
 Line(454) = {453,454};
 Line(455) = {454,455};
+//Outlet
+Line(471) = {457,456}; // top
+Line(470) = {458,457}; // middle
+Line(469) = {455,458}; // bottom
 
-// Outlet
-//Line(401) = {213,1213};  //goes counter-clockwise
-Line(401) = {455,456};  //goes counter-clockwise
+// Top wall, opposite of cavity
+Point(600) = {0.65163,0.01167548819733,0.0,basesize};
+Point(601) = {0.72163,0.01167548819733,0.0,basesize};
+
+// Points for Bl mesh coming into and out of cavity
+Point(602) = {0.65163,-0.0083245+bl_thickness,0.0,basesize};
+Point(603) = {0.72163,-0.0083245+bl_thickness,0.0,basesize};
+Point(604) = {0.65163,0.01167548819733-bl_thickness,0.0,basesize};
+Point(605) = {0.72163,0.01167548819733-bl_thickness,0.0,basesize};
 
 //Top wall
-Line(457) = {456,213};  // goes counter-clockwise
+//Line(457) = {212,470};  // goes clockwise
+Line(475) = {456,601};  // combustor
+Line(476) = {601,600};  // cavity
+Line(477) = {600,212};  // isolator
+
+// Internal edges to seperate isolator, cavity, combustor
+Line(600) = {450,602};
+Line(601) = {602,604};
+Line(602) = {453,603};
+Line(603) = {603,605};
+Line(604) = {604,600};
+Line(605) = {605,601};
 
 //Create lineloop of this geometry
 // start on the bottom left and go around clockwise
-//Curve Loop(1) = { 400, 1001, -401, -1000 }; Plane Surface(1) = {1}; // the back wall
-Curve Loop(1) = { 
-    -400, // inlet (2)
-    1000, // top nozzle (3)
-    -457, // top extension to end (4)
-    -401, // outlet (5)
-    -455, // bottom expansion (6)
-    -454, // post-cavity flat (7)
-    -453, // cavity rear (slant) (8)
-    -452, // cavity bottom (9)
-    -451, // cavity front (10)
-    -450, // isolator to cavity (11)
-    -1001 // bottom nozzle (12)
-}; 
+// isolator
+Curve Loop(1) = {
+-422, // inlet
+-423, // inlet
+-424, // inlet
+1000, // top wall
+-477, // extension to end
+-604,
+-601,
+-600,
+-450, // isolator to cavity
+-1001 // bottom wall
+};
+// cavity
+Curve Loop(2) = {
+-453, // cavity rear upper (slant)
+-452, // cavity bottom
+-451, // cavity front
+-600,
+-601,
+-604,
+-476,
+-605,
+-603,
+-602
+};
+// combustor
+Curve Loop(3) = {
+-475, // extension to end
+-471, // outlet
+-470, // outlet
+-469, // outlet
+-455, // bottom expansion
+-454, // post-cavity flat
+-602,
+-603,
+-605
+};
 
-Surface(1) = {1}; // the back wall
+//Plane Surface(1) = {1,2,3};
+Surface(1) = {1};
+Surface(2) = {2};
+Surface(3) = {3};
+
+//Physical Surface('domain') = {-1, -2, -3};
+
 
 // surfaceVector contains in the following order:
 // [0]	- front surface (opposed to source surface)
 // [1] - extruded volume
 // [n+1] - surfaces (belonging to nth line in "Curve Loop (1)") */
-surface_vector[] = Extrude {0, 0, 0.035} { Surface{1}; };
+surface_vector_isolator[] = Extrude {0, 0, 0.035} { Surface{1}; };
+surface_vector_cavity[] = Extrude {0, 0, 0.035} { Surface{2}; };
+surface_vector_combustor[] = Extrude {0, 0, 0.035} { Surface{3}; };
 
 //surface_vector[0], // front surface (opposing extruded surface)
 //surface_vector[2], // isolator bottom
@@ -579,8 +706,8 @@ surface_vector[] = Extrude {0, 0, 0.035} { Surface{1}; };
 //Cylinder { x0, y0, z0, xn, yn, zn, r }
 Cylinder(100) = {0.70163, -0.0283245 + inj_h + inj_t/2., 0.035/2., inj_d, 0.0, 0.0, inj_t/2.0 };
 injector_surface_vector[] = Boundary{Volume{100};};
-// form union with isolator volume
-union[] = BooleanUnion { Volume{surface_vector[1]}; Delete; }{Volume{100}; Delete; };
+// form union with cavity volume
+union[] = BooleanUnion { Volume{surface_vector_cavity[1]}; Delete; }{Volume{100}; Delete; };
 // Abs removes the directionality of the surface, so we can use in mesh generation (spacing)
 surface_vector_full[] = Abs(Boundary{Volume{union[0]};});
 //
@@ -613,7 +740,13 @@ surface_vector_full[] = Abs(Boundary{Volume{union[0]};});
 //surface_vector_full[14], // injector inlet
 
 //Physical Volume("fluid_domain") = surface_vector[1];
-Physical Volume("fluid_domain") = union[0];
+Physical Volume("fluid_domain") = {surface_vector_isolator[1], surface_vector_combustor[1], union[0]};
+
+
+
+
+
+
 Physical Surface("inflow") = 1; // inlet
 Physical Surface("outflow") = surface_vector_full[12]; // outlet
 Physical Surface("injection") = surface_vector_full[14]; // injection
@@ -793,7 +926,8 @@ Field[8].VOut = bigsize;
 
 // take the minimum of all defined meshing fields
 Field[100] = Min;
-Field[100].FieldsList = {2, 3, 4, 5, 6, 7, 8, 12, 14};
+//Field[100].FieldsList = {2, 3, 4, 5, 6, 7, 8, 12, 14};
+Field[100].FieldsList = {2};
 Background Field = 100;
 
 Mesh.MeshSizeExtendFromBoundary = 0;
