@@ -316,7 +316,7 @@ class InitACTII:
         self._inj_ybottom = inj_ybottom
         self._inj_mach = inj_mach
 
-    def __call__(self, discr, x_vec, eos, *, time=0.0):
+    def __call__(self, dcoll, x_vec, eos, *, time=0.0):
         """Create the solution state at locations *x_vec*.
 
         Parameters
@@ -1096,7 +1096,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     if rank == 0:
         logging.info("Making discretization")
 
-    discr = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
+    dcoll = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
 
     if rank == 0:
         logging.info("Done making discretization")
@@ -1104,12 +1104,12 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     if rank == 0:
         logging.info("Initializing solution")
 
-    current_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
+    current_cv = bulk_init(dcoll=dcoll, x_vec=thaw(dcoll.nodes(), actx),
                            eos=eos, time=0)
     current_state = make_fluid_state(current_cv, gas_model, init_temperature)
     current_state = thaw(freeze(current_state, actx), actx)
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     def my_write_viz(step, t, cv, dv):
 
@@ -1124,7 +1124,7 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
+        write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):

@@ -329,7 +329,7 @@ class InitACTII:
         self._throat_height = 3.61909e-3
         self._x_throat = 0.283718298
 
-    def __call__(self, discr, x_vec, eos, *, time=0.0):
+    def __call__(self, dcoll, x_vec, eos, *, time=0.0):
         """Create the solution state at locations *x_vec*.
 
         Parameters
@@ -1036,19 +1036,19 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         ymax=0.011675488
     )
 
-    def _boundary_state_func(discr, btag, gas_model, actx, init_func, **kwargs):
-        bnd_discr = discr.discr_from_dd(btag)
+    def _boundary_state_func(dcoll, btag, gas_model, actx, init_func, **kwargs):
+        bnd_discr = dcoll.discr_from_dd(btag)
         nodes = thaw(bnd_discr.nodes(), actx)
         return make_fluid_state(init_func(x_vec=nodes, eos=gas_model.eos,
                                           **kwargs), gas_model)
 
-    def _inflow_state_func(discr, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(discr, btag, gas_model,
+    def _inflow_state_func(dcoll, btag, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, btag, gas_model,
                                     state_minus.array_context,
                                     _inflow_init, **kwargs)
 
-    def _outflow_state_func(discr, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(discr, btag, gas_model,
+    def _outflow_state_func(dcoll, btag, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, btag, gas_model,
                                     state_minus.array_context,
                                     _outflow_init, **kwargs)
 
@@ -1095,7 +1095,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     from meshmode.discretization.poly_element import \
           default_simplex_group_factory, QuadratureSimplexGroupFactory
 
-    discr = EagerDGDiscretization(
+    dcoll = EagerDGDiscretization(
         actx, local_mesh,
         discr_tag_to_group_factory={
             DISCR_TAG_BASE: default_simplex_group_factory(
@@ -1120,8 +1120,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     sponge_init = InitSponge(x0=sponge_x0, thickness=sponge_thickness,
                              amplitude=sponge_amp)
-    sponge_sigma = sponge_init(x_vec=thaw(discr.nodes(), actx))
-    ref_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
+    sponge_sigma = sponge_init(x_vec=thaw(dcoll.nodes(), actx))
+    ref_cv = bulk_init(dcoll=dcoll, x_vec=thaw(dcoll.nodes(), actx),
                        eos=eos, time=0)
 
     vis_timer = None
@@ -1156,7 +1156,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             logger.info("Restarting soln.")
         current_cv = restart_data["cv"]
         if restart_order != order:
-            restart_discr = EagerDGDiscretization(
+            restart_dcoll = EagerDGDiscretization(
                 actx,
                 local_mesh,
                 order=restart_order,
@@ -1164,8 +1164,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
-                discr.discr_from_dd("vol"),
-                restart_discr.discr_from_dd("vol")
+                dcoll.discr_from_dd("vol"),
+                restart_dcoll.discr_from_dd("vol")
             )
             current_cv = connection(restart_data["cv"])
         if logmgr:
@@ -1174,12 +1174,12 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         # Set the current state from time 0
         if rank == 0:
             logger.info("Initializing soln.")
-        current_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
+        current_cv = bulk_init(dcoll=dcoll, x_vec=thaw(dcoll.nodes(), actx),
                                   eos=eos, time=0)
 
     current_state = make_fluid_state(current_cv, gas_model)
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     #    initname = initializer.__class__.__name__
     eosname = eos.__class__.__name__
@@ -1201,15 +1201,15 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         pres = thaw(freeze(pres, actx), actx)
         from grudge.op import nodal_min_loc, nodal_max_loc
         pmin = global_reduce(
-            actx.to_numpy(nodal_min_loc(discr, "vol", pres)), op="min")
+            actx.to_numpy(nodal_min_loc(dcoll, "vol", pres)), op="min")
         pmax = global_reduce(
-            actx.to_numpy(nodal_max_loc(discr, "vol", pres)), op="max")
+            actx.to_numpy(nodal_max_loc(dcoll, "vol", pres)), op="max")
         dv_status_msg = (
             f"\n-------- P (min, max) (Pa) = ({pmin:1.9e}, {pmax:1.9e})")
         tmin = global_reduce(
-            actx.to_numpy(nodal_min_loc(discr, "vol", temp)), op="min")
+            actx.to_numpy(nodal_min_loc(dcoll, "vol", temp)), op="min")
         tmax = global_reduce(
-            actx.to_numpy(nodal_max_loc(discr, "vol", temp)), op="max")
+            actx.to_numpy(nodal_max_loc(dcoll, "vol", temp)), op="max")
         dv_status_msg += (
             f"\n-------- T (min, max) (K)  = ({tmin:7g}, {tmax:7g})")
         status_msg += dv_status_msg
@@ -1219,7 +1219,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             logger.info(status_msg)
 
     def my_write_viz(step, t, cv, dv, ts_field, alpha_field):
-        tagged_cells = smoothness_indicator(discr, cv.mass, s0=s0_sc,
+        tagged_cells = smoothness_indicator(dcoll, cv.mass, s0=s0_sc,
                                             kappa=kappa_sc)
 
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
@@ -1232,7 +1232,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                       ("alpha", alpha_field),
                       ("tagged_cells", tagged_cells),
                       ("dt" if constant_cfl else "cfl", ts_field)]
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
+        write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv):
@@ -1251,27 +1251,27 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     def my_health_check(dv):
         health_error = False
-        if check_naninf_local(discr, "vol", dv.pressure):
+        if check_naninf_local(dcoll, "vol", dv.pressure):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if global_reduce(check_range_local(discr, "vol", dv.pressure,
+        if global_reduce(check_range_local(dcoll, "vol", dv.pressure,
                                      health_pres_min, health_pres_max),
                                      op="lor"):
             health_error = True
-            p_min = actx.to_numpy(nodal_min(discr, "vol", dv.pressure))
-            p_max = actx.to_numpy(nodal_max(discr, "vol", dv.pressure))
+            p_min = actx.to_numpy(nodal_min(dcoll, "vol", dv.pressure))
+            p_max = actx.to_numpy(nodal_max(dcoll, "vol", dv.pressure))
             logger.info(f"Pressure range violation ({p_min=}, {p_max=})")
 
         return health_error
 
-    def my_get_viscous_timestep(discr, state, alpha):
+    def my_get_viscous_timestep(dcoll, state, alpha):
         """Routine returns the the node-local maximum stable viscous timestep.
 
         Parameters
         ----------
-        discr: grudge.eager.EagerDGDiscretization
-            the discretization to use
+        dcoll: grudge.eager.EagerDGDiscretization
+            the discretization collection to use
         state: :class:`~mirgecom.gas_model.FluidState`
             Full fluid state including conserved and thermal state
         alpha: :class:`~meshmode.DOFArray`
@@ -1284,7 +1284,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         """
         from grudge.dt_utils import characteristic_lengthscales
 
-        length_scales = characteristic_lengthscales(state.array_context, discr)
+        length_scales = characteristic_lengthscales(state.array_context, dcoll)
 
         nu = 0
         d_alpha_max = 0
@@ -1303,13 +1303,13 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             + ((nu + d_alpha_max + alpha) / length_scales))
         )
 
-    def my_get_viscous_cfl(discr, dt, state, alpha):
+    def my_get_viscous_cfl(dcoll, dt, state, alpha):
         """Calculate and return node-local CFL based on current state and timestep.
 
         Parameters
         ----------
-        discr: :class:`grudge.eager.EagerDGDiscretization`
-            the discretization to use
+        dcoll: :class:`grudge.eager.EagerDGDiscretization`
+            the discretization collection to use
         dt: float or :class:`~meshmode.dof_array.DOFArray`
             A constant scalar dt or node-local dt
         state: :class:`~mirgecom.gas_model.FluidState`
@@ -1322,28 +1322,28 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         :class:`~meshmode.dof_array.DOFArray`
             The CFL at each node.
         """
-        return dt / my_get_viscous_timestep(discr, state=state, alpha=alpha)
+        return dt / my_get_viscous_timestep(dcoll, state=state, alpha=alpha)
 
     def my_get_timestep(t, dt, state, alpha):
         t_remaining = max(0, t_final - t)
         if constant_cfl:
-            ts_field = current_cfl * my_get_viscous_timestep(discr, state=state,
+            ts_field = current_cfl * my_get_viscous_timestep(dcoll, state=state,
                                                              alpha=alpha)
             from grudge.op import nodal_min
-            dt = actx.to_numpy(nodal_min(discr, "vol", ts_field))
+            dt = actx.to_numpy(nodal_min(dcoll, "vol", ts_field))
             cfl = current_cfl
         else:
-            ts_field = my_get_viscous_cfl(discr, dt=dt, state=state, alpha=alpha)
+            ts_field = my_get_viscous_cfl(dcoll, dt=dt, state=state, alpha=alpha)
             from grudge.op import nodal_max
-            cfl = actx.to_numpy(nodal_max(discr, "vol", ts_field))
+            cfl = actx.to_numpy(nodal_max(dcoll, "vol", ts_field))
 
         return ts_field, cfl, min(t_remaining, dt)
 
-    def my_get_alpha(discr, state, alpha):
+    def my_get_alpha(dcoll, state, alpha):
         """ Scale alpha by the element characteristic length """
         from grudge.dt_utils import characteristic_lengthscales
         array_context = state.array_context
-        length_scales = characteristic_lengthscales(array_context, discr)
+        length_scales = characteristic_lengthscales(array_context, dcoll)
 
         #from mirgecom.fluid import compute_wavespeed
         #wavespeed = compute_wavespeed(eos, state)
@@ -1366,7 +1366,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             if logmgr:
                 logmgr.tick_before()
 
-            alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+            alpha_field = my_get_alpha(dcoll, fluid_state, alpha_sc)
             ts_field, cfl, dt = my_get_timestep(t, dt, fluid_state, alpha_field)
 
             do_viz = check_step(step=step, interval=nviz)
@@ -1399,7 +1399,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             my_write_restart(step=step, t=t, cv=cv)
             raise
 
-        dt = get_sim_timestep(discr, fluid_state, t, dt, current_cfl, t_final,
+        dt = get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl, t_final,
                               constant_cfl)
 
         return state, dt
@@ -1415,11 +1415,11 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     def my_rhs(t, state):
         fluid_state = make_fluid_state(cv=state, gas_model=gas_model)
-        alpha_field = my_get_alpha(discr, fluid_state, alpha_sc)
+        alpha_field = my_get_alpha(dcoll, fluid_state, alpha_sc)
         return (
-            ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
+            ns_operator(dcoll, state=fluid_state, time=t, boundaries=boundaries,
                         gas_model=gas_model, quadrature_tag=quadrature_tag)
-            + av_laplacian_operator(discr, fluid_state=fluid_state,
+            + av_laplacian_operator(dcoll, fluid_state=fluid_state,
                                     boundaries=boundaries,
                                     boundary_kwargs={"time": t,
                                                      "gas_model": gas_model},
@@ -1428,7 +1428,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             + sponge(cv=fluid_state.cv, cv_ref=ref_cv, sigma=sponge_sigma)
         )
 
-    current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
+    current_dt = get_sim_timestep(dcoll, current_state, current_t, current_dt,
                                   current_cfl, t_final, constant_cfl)
 
     current_step, current_t, current_cv = \
@@ -1444,7 +1444,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if rank == 0:
         logger.info("Checkpointing final state ...")
     final_dv = current_state.dv
-    alpha_field = my_get_alpha(discr, current_state, alpha_sc)
+    alpha_field = my_get_alpha(dcoll, current_state, alpha_sc)
     ts_field, cfl, dt = my_get_timestep(t=current_t, dt=current_dt,
                                         state=current_state, alpha=alpha_field)
     my_write_status(dt=dt, cfl=cfl, dv=final_dv)
