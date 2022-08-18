@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # default branch for building mirgecom for this driver
-mirge_branch="new_art_visc"
+mirge_branch="physical_av"
 # conda environment name
 conda_env="mirgeDriver.Y2isolator"
 
