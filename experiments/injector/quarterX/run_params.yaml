@@ -1,7 +1,8 @@
-nviz: 1
+nviz: 100
 nrestart: 1000
 nhealth: 1
 nstatus: 1
+nlimit: 1
 current_dt: 5.0e-9
 t_final: 2e-7
 order:  1
@@ -29,8 +30,8 @@ kappa_sc: 0.5
 s0_sc: -5.0
 use_sponge: False
 sponge_sigma: 0.
-integrator: compiled_lsrk54
+#integrator: compiled_lsrk54
 #integrator: lsrk54
-#integrator: euler
+integrator: euler
 health_pres_min: 10
 health_pres_max: 2.e7

@@ -83,6 +83,7 @@ from mirgecom.fluid import make_conserved
 from mirgecom.limiter import bound_preserving_limiter
 from mirgecom.gas_model import make_operator_fluid_states
 from mirgecom.navierstokes import grad_cv_operator
+from dataclasses import replace
 
 
 class SingleLevelFilter(logging.Filter):
@@ -891,7 +892,6 @@ def main(ctx_factory=cl.create_some_context,
             cv=target_cv, dv=target_state.dv, grad_cv=target_grad_cv)
 
         # avoid recomputation of temperature
-        from dataclasses import replace
         new_dv = replace(target_state.dv, smoothness=target_smoothness)
         target_state = replace(target_state, dv=new_dv)
         new_tv = gas_model.transport.transport_vars(
@@ -1349,7 +1349,7 @@ def main(ctx_factory=cl.create_some_context,
 
                 limit_species_rhs = 0.*cv
                 if limit_species:
-                    fluid_state = create_fluid_state(cv=cv, gas_model=gas_model,
+                    fluid_state = create_fluid_state(cv=cv,
                                                      temperature_seed=tseed,
                                                      smoothness=no_smoothness)
                     cv, limit_species_rhs = limit_species_source_compiled(
@@ -1388,14 +1388,18 @@ def main(ctx_factory=cl.create_some_context,
                                                         dv=fluid_state.dv,
                                                         grad_cv=grad_cv)
 
+                        fluid_state = create_fluid_state(cv=cv,
+                                                         smoothness=no_smoothness,
+                                                         temperature_seed=tseed)
+                        """
                         # avoid recomputation of temperature
-                        from dataclasses import replace
                         force_evaluation(actx, smoothness)
                         new_dv = replace(fluid_state.dv, smoothness=smoothness)
                         fluid_state = replace(fluid_state, dv=new_dv)
                         new_tv = gas_model.transport.transport_vars(
                             cv=cv, dv=new_dv, eos=gas_model.eos)
                         fluid_state = replace(fluid_state, tv=new_tv)
+                        """
 
                 # if the time integrator didn't force_eval, do so now
                 if not force_eval:
@@ -1455,6 +1459,16 @@ def main(ctx_factory=cl.create_some_context,
             fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
                                            temperature_seed=tseed,
                                            smoothness=no_smoothness)
+            """
+            # This should be equivalent and faster, but increases the comp time
+            if not limit_species:
+                fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                               temperature_seed=tseed,
+                                               smoothness=no_smoothness)
+            else:
+                fluid_state = replace(fluid_state, cv=cv)
+            """
+
         elif use_av == 2:
             smoothness = smoothness_indicator(
                 discr=discr, u=cv.mass, kappa=kappa_sc, s0=s0_sc)
@@ -1473,12 +1487,18 @@ def main(ctx_factory=cl.create_some_context,
             smoothness = compute_smoothness(cv=cv, dv=fluid_state.dv,
                                             grad_cv=grad_fluid_cv)
 
-            from dataclasses import replace
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=smoothness)
+            """
+            # This should be equivalent and faster?
+            # But the compilation is super slow
             new_dv = replace(fluid_state.dv, smoothness=smoothness)
             fluid_state = replace(fluid_state, dv=new_dv)
             new_tv = gas_model.transport.transport_vars(
                 cv=cv, dv=new_dv, eos=gas_model.eos)
             fluid_state = replace(fluid_state, tv=new_tv)
+            """
 
         # Temperature seed RHS (keep tseed updated)
         tseed_rhs = fluid_state.temperature - tseed
@@ -1547,7 +1567,7 @@ def main(ctx_factory=cl.create_some_context,
 
     limit_species_rhs = 0*current_state.cv
     if limit_species:
-        fluid_state = create_fluid_state(cv=current_state.cv, gas_model=gas_model,
+        fluid_state = create_fluid_state(cv=current_state.cv,
                                          temperature_seed=tseed,
                                          smoothness=no_smoothness)
         cv, limit_species_rhs = limit_species_source(
@@ -1578,9 +1598,14 @@ def main(ctx_factory=cl.create_some_context,
         smoothness = compute_smoothness(cv=current_cv, dv=current_state.dv,
                                         grad_cv=current_grad_cv)
 
-        from dataclasses import replace
+        current_state = create_fluid_state(cv=current_cv,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+
+        """
         new_dv = replace(current_state.dv, smoothness=smoothness)
         current_state = replace(current_state, dv=new_dv)
+        """
 
     final_dv = current_state.dv
     alpha_field = my_get_alpha(current_state, alpha_sc)
