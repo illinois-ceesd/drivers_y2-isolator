@@ -1349,9 +1349,9 @@ def main(ctx_factory=cl.create_some_context,
 
                 limit_species_rhs = 0.*cv
                 if limit_species:
-                    fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-                                                   temperature_seed=tseed,
-                                                   smoothness=no_smoothness)
+                    fluid_state = create_fluid_state(cv=cv, gas_model=gas_model,
+                                                     temperature_seed=tseed,
+                                                     smoothness=no_smoothness)
                     cv, limit_species_rhs = limit_species_source_compiled(
                         cv=cv, pressure=fluid_state.pressure,
                         temperature=fluid_state.temperature,
@@ -1544,6 +1544,16 @@ def main(ctx_factory=cl.create_some_context,
     # Dump the final data
     if rank == 0:
         logger.info("Checkpointing final state ...")
+
+    limit_species_rhs = 0*current_state.cv
+    if limit_species:
+        fluid_state = create_fluid_state(cv=current_state.cv, gas_model=gas_model,
+                                         temperature_seed=tseed,
+                                         smoothness=no_smoothness)
+        cv, limit_species_rhs = limit_species_source(
+            cv=current_state.cv, pressure=fluid_state.pressure,
+            temperature=fluid_state.temperature,
+            species_enthalpies=fluid_state.species_enthalpies)
 
     if use_av == 0 or use_av == 1:
         current_state = create_fluid_state(cv=current_cv,

@@ -27,7 +27,7 @@ EndIf
 If(Exists(injectorfac))
     injector_factor=injectorfac;
 Else
-    injector_factor=6.0;
+    injector_factor=5.0;
 EndIf
 If(Exists(shearfac))
     shear_factor=shearfac;
@@ -893,7 +893,7 @@ Field[20].Thickness = bl_thickness;
 // injector boundary layer mesh
 Field[21] = BoundaryLayer;
 Field[21].CurvesList = {501,503};
-Field[21].Size = injectorsize/boundratioinjector/2;
+Field[21].Size = injectorsize/boundratioinjector;
 Field[21].SizeFar = bigsize;
 //Field[20].IntersectMetrics = 1;
 Field[21].Thickness = bl_thickness_inj;
