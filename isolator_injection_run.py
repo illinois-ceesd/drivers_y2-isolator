@@ -1066,12 +1066,6 @@ def main(ctx_factory=cl.create_some_context,
         dv = fluid_state.dv
         mu = fluid_state.viscosity
 
-        if limit_species:
-            cv_limited, limit_species_rhs = limit_species_source(
-                cv=cv, pressure=fluid_state.pressure,
-                temperature=fluid_state.temperature,
-                species_enthalpies=fluid_state.species_enthalpies)
-
         smoothness = dv.smoothness
         indicator = no_smoothness
         if use_av == 1:
@@ -1117,11 +1111,6 @@ def main(ctx_factory=cl.create_some_context,
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
-
-        if limit_species:
-            viz_ext = [("cv_limited", cv_limited),
-                      ("limit_source", limit_species_rhs)]
-            viz_fields.extend(viz_ext)
 
         if nspecies > 2:
             temp_resid = get_temperature_update_compiled(
@@ -1340,7 +1329,9 @@ def main(ctx_factory=cl.create_some_context,
             dim=dim, mass=cv.mass, energy=energy_lim_source, momentum=cv.momentum,
             species_mass=cv.mass*spec_lim_source)
 
-        return cv_limited, cv_limited_source
+        return make_obj_array([cv_limited, cv_limited_source])
+
+    limit_species_source_compiled = actx.compile(limit_species_source)
 
     def my_pre_step(step, t, dt, state):
 
@@ -1355,6 +1346,16 @@ def main(ctx_factory=cl.create_some_context,
 
             if any([do_viz, do_restart, do_health, do_status]):
                 cv, tseed = state
+
+                limit_species_rhs = 0.*cv
+                if limit_species:
+                    fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                                   temperature_seed=tseed,
+                                                   smoothness=no_smoothness)
+                    cv, limit_species_rhs = limit_species_source_compiled(
+                        cv=cv, pressure=fluid_state.pressure,
+                        temperature=fluid_state.temperature,
+                        species_enthalpies=fluid_state.species_enthalpies)
 
                 if use_av == 0 or use_av == 1:
                     fluid_state = create_fluid_state(cv=cv,

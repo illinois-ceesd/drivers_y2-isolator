@@ -49,7 +49,7 @@ EndIf
 
 // boundary layer thickness
 bl_thickness = 0.0015;
-bl_thickness_inj = 0.00035;
+bl_thickness_inj = 0.0005;
 
 // horizontal injection
 cavityAngle=45;
@@ -876,7 +876,7 @@ Field[115].NumPointsPerCurve = 10000;
 Field[116] = Threshold;
 Field[116].InField = 115;
 //Field[112].SizeMin = 0.0002;
-Field[116].SizeMin = injectorsize/boundratioinjector/2;
+Field[116].SizeMin = injectorsize/boundratioinjector;
 Field[116].SizeMax = bigsize;
 Field[116].DistMin = 0.0002;
 Field[116].DistMax = bl_thickness_inj;
@@ -884,9 +884,7 @@ Field[116].StopAtDistMax = 1;
 
 // isolator/combustor boundary layer mesh
 Field[20] = BoundaryLayer;
-//Field[20].CurvesList = {1000, 1001, 475};
 Field[20].CurvesList = {1000,1001,450,454,455,475,476,477};
-//Field[20].Size = 0.0001;
 Field[20].Size = isosize/boundratio/4;
 Field[20].SizeFar = bigsize;
 //Field[20].IntersectMetrics = 1;
@@ -894,10 +892,8 @@ Field[20].Thickness = bl_thickness;
 
 // injector boundary layer mesh
 Field[21] = BoundaryLayer;
-//Field[21].CurvesList = {501,503,513,511,521,523};
 Field[21].CurvesList = {501,503};
-//Field[20].Size = 0.0001;
-Field[21].Size = injectorsize/boundratioinjector/4;
+Field[21].Size = injectorsize/boundratioinjector/2;
 Field[21].SizeFar = bigsize;
 //Field[20].IntersectMetrics = 1;
 Field[21].Thickness = bl_thickness_inj;
@@ -917,7 +913,7 @@ Field[23].XCenter = 0.70163+inj_h;
 Field[23].YCenter = -0.0283245+inj_h;
 Field[23].Radius = bl_thickness_inj;
 Field[23].Thickness = 0.1;
-Field[23].VIn = injectorsize/boundratioinjector/2;
+Field[23].VIn = injectorsize/boundratioinjector;
 Field[23].VOut = bigsize;
 
 Field[24] = Ball;
@@ -925,7 +921,7 @@ Field[24].XCenter = 0.70163+inj_h+inj_t;
 Field[24].YCenter = -0.0283245+inj_h+inj_t;
 Field[24].Radius = bl_thickness_inj;
 Field[24].Thickness = 0.1;
-Field[24].VIn = injectorsize/boundratioinjector/2;
+Field[24].VIn = injectorsize/boundratioinjector;
 Field[24].VOut = bigsize;
 
 BoundaryLayer Field = {20, 21};
