@@ -38,7 +38,6 @@ import pyopencl.array as cla  # noqa
 import math
 from functools import partial
 
-from arraycontext import thaw, freeze
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
@@ -46,10 +45,10 @@ from grudge.shortcuts import make_visualizer
 from mirgecom.simutil import (
     generate_and_distribute_mesh,
     write_visfile,
+    force_evaluation
 )
 from mirgecom.restart import write_restart_file
 from mirgecom.mpi import mpi_entry_point
-import pyopencl.tools as cl_tools
 
 from mirgecom.fluid import make_conserved
 from mirgecom.eos import IdealSingleGas, PyrometheusMixture
@@ -1104,10 +1103,11 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     if rank == 0:
         logging.info("Initializing solution")
 
-    current_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
+    current_cv = bulk_init(discr=discr, x_vec=actx.thaw(discr.nodes()),
                            eos=eos, time=0)
-    current_state = make_fluid_state(current_cv, gas_model, init_temperature)
-    current_state = thaw(freeze(current_state, actx), actx)
+    current_state = force_evaluation(actx,
+                                     make_fluid_state(current_cv, gas_model,
+                                                      init_temperature))
 
     visualizer = make_visualizer(discr)
 
@@ -1124,8 +1124,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
-                      step=step, t=t, overwrite=True)
+        write_visfile(discr=discr, io_fields=viz_fields, visualizer=visualizer,
+                      vizname=vizname, comm=comm, step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)

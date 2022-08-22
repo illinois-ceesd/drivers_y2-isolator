@@ -33,7 +33,7 @@ import pyopencl.array as cla  # noqa
 from functools import partial
 from pytools.obj_array import make_obj_array
 
-from arraycontext import thaw, freeze
+from arraycontext import thaw
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
@@ -62,7 +62,6 @@ from mirgecom.simutil import (
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
-import pyopencl.tools as cl_tools
 from mirgecom.integrators import (rk4_step, lsrk54_step, lsrk144_step,
                                   euler_step)
 from grudge.shortcuts import compiled_lsrk45_step
@@ -831,7 +830,7 @@ def main(ctx_factory=cl.create_some_context,
     flow_ref_state = \
         get_target_state_on_boundary(DTAG_BOUNDARY("flow"))
 
-    flow_ref_state = thaw(freeze(flow_ref_state, actx), actx)
+    flow_ref_state = force_evaluation(actx, flow_ref_state)
 
     def _target_flow_state_func(**kwargs):
         return flow_ref_state
@@ -983,8 +982,8 @@ def main(ctx_factory=cl.create_some_context,
                        ("Pe_heat", cell_Pe_heat)]
             viz_fields.extend(viz_ext)
 
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
-                      step=step, t=t, overwrite=True)
+        write_visfile(discr=discr, io_fields=viz_fields, visualizer=visualizer,
+                      vizname=vizname, comm=comm, step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)

@@ -39,7 +39,6 @@ import math
 from pytools.obj_array import make_obj_array
 from functools import partial
 
-from arraycontext import thaw, freeze
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
@@ -62,7 +61,8 @@ from mirgecom.simutil import (
     write_visfile,
     check_naninf_local,
     check_range_local,
-    get_sim_timestep
+    get_sim_timestep,
+    force_evaluation
 )
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
@@ -74,7 +74,7 @@ from mirgecom.fluid import make_conserved
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedFluidBoundary,
-    IsothermalNoSlipBoundary,
+    IsothermalWallBoundary,
 )
 #from mirgecom.initializers import (Uniform, PlanarDiscontinuity)
 from mirgecom.eos import IdealSingleGas
@@ -1038,7 +1038,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     def _boundary_state_func(discr, btag, gas_model, actx, init_func, **kwargs):
         bnd_discr = discr.discr_from_dd(btag)
-        nodes = thaw(bnd_discr.nodes(), actx)
+        nodes = actx.thaw(bnd_discr.nodes())
         return make_fluid_state(init_func(x_vec=nodes, eos=gas_model.eos,
                                           **kwargs), gas_model)
 
@@ -1054,7 +1054,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     inflow = PrescribedFluidBoundary(boundary_state_func=_inflow_state_func)
     outflow = PrescribedFluidBoundary(boundary_state_func=_outflow_state_func)
-    wall = IsothermalNoSlipBoundary()
+    wall = IsothermalWallBoundary()
 
     boundaries = {
         DTAG_BOUNDARY("inflow"): inflow,
@@ -1120,8 +1120,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     sponge_init = InitSponge(x0=sponge_x0, thickness=sponge_thickness,
                              amplitude=sponge_amp)
-    sponge_sigma = sponge_init(x_vec=thaw(discr.nodes(), actx))
-    ref_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
+    sponge_sigma = sponge_init(x_vec=actx.thaw(discr.nodes()))
+    ref_cv = bulk_init(discr=discr, x_vec=actx.thaw(discr.nodes()),
                        eos=eos, time=0)
 
     vis_timer = None
@@ -1174,7 +1174,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         # Set the current state from time 0
         if rank == 0:
             logger.info("Initializing soln.")
-        current_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
+        current_cv = bulk_init(discr=discr, x_vec=actx.thaw(discr.nodes()),
                                   eos=eos, time=0)
 
     current_state = make_fluid_state(current_cv, gas_model)
@@ -1192,13 +1192,15 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if rank == 0:
         logger.info(init_message)
 
+    def get_fluid_state(cv):
+        return make_fluid_state(cv=cv, gas_model=gas_model)
+
+    create_fluid_state = actx.compile(get_fluid_state)
+
     def my_write_status(dt, cfl, dv):
         status_msg = f"-------- dt = {dt:1.3e}, cfl = {cfl:1.4f}"
         temp = dv.temperature
         pres = dv.pressure
-        actx = temp.array_context
-        temp = thaw(freeze(temp, actx), actx)
-        pres = thaw(freeze(pres, actx), actx)
         from grudge.op import nodal_min_loc, nodal_max_loc
         pmin = global_reduce(
             actx.to_numpy(nodal_min_loc(discr, "vol", pres)), op="min")
@@ -1232,8 +1234,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                       ("alpha", alpha_field),
                       ("tagged_cells", tagged_cells),
                       ("dt" if constant_cfl else "cfl", ts_field)]
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
-                      step=step, t=t, overwrite=True)
+        write_visfile(discr=discr, io_fields=viz_fields, visualizer=visualizer,
+                      vizname=vizname, comm=comm, step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
@@ -1357,7 +1359,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         return alpha_field
 
     def my_pre_step(step, t, dt, state):
-        fluid_state = make_fluid_state(cv=state, gas_model=gas_model)
+        fluid_state = force_evaluation(actx, create_fluid_state(cv=state))
         cv = fluid_state.cv
         dv = fluid_state.dv
 
@@ -1438,7 +1440,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                       istep=current_step, dt=current_dt,
                       t=current_t, t_final=t_final,
                       state=current_state.cv)
-    current_state = make_fluid_state(current_cv, gas_model)
+    current_state = create_fluid_state(current_cv)
 
     # Dump the final data
     if rank == 0:
