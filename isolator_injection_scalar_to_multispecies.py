@@ -37,6 +37,7 @@ import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
 import math
 from functools import partial
+from pytools.obj_array import make_obj_array
 
 from arraycontext import thaw
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
@@ -52,7 +53,6 @@ from mirgecom.mpi import mpi_entry_point
 import pyopencl.tools as cl_tools
 
 from mirgecom.fluid import make_conserved
-import cantera
 from mirgecom.eos import IdealSingleGas, PyrometheusMixture
 from mirgecom.transport import SimpleTransport
 from mirgecom.gas_model import GasModel, make_fluid_state
@@ -121,7 +121,9 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     # main array context for the simulation
     if lazy:
-        actx = actx_class(comm, queue, mpi_base_tag=12000)
+        actx = actx_class(comm, queue,
+                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
+                mpi_base_tag=12000)
     else:
         actx = actx_class(comm, queue,
                 allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
@@ -196,37 +198,42 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
                                       species_diffusivity=spec_diffusivity)
 
-    # initialize eos and species mass fractions
-    y = np.zeros(nspecies)
-    from mirgecom.mechanisms import get_mechanism_cti
-    mech_cti = get_mechanism_cti("uiuc")
-
-    cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
-    cantera_nspecies = cantera_soln.n_species
-    if nspecies != cantera_nspecies:
-        if rank == 0:
-            print(f"specified {nspecies=}, but cantera mechanism"
-                  f" needs nspecies={cantera_nspecies}")
-        raise RuntimeError()
-
-    i_c2h4 = cantera_soln.species_index("C2H4")
-    i_h2 = cantera_soln.species_index("H2")
-    i_ox = cantera_soln.species_index("O2")
-    i_di = cantera_soln.species_index("N2")
-    # Set the species mass fractions to the free-stream flow
-    y[i_ox] = mf_o2
-    y[i_di] = 1. - mf_o2
-
-    cantera_soln.TPY = init_temperature, 101325, y
-
     # make the eos
     eos_scalar = IdealSingleGas(gamma=gamma, gas_const=r)
-    from mirgecom.thermochemistry import make_pyrometheus_mechanism_class
-    pyro_mech = make_pyrometheus_mechanism_class(cantera_soln)(actx.np)
+    from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
+    from uiuc import Thermochemistry
+    pyro_mech = get_pyrometheus_wrapper_class(
+        pyro_class=Thermochemistry)(actx.np)
     eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
     species_names = pyro_mech.species_names
 
     gas_model = GasModel(eos=eos, transport=transport_model)
+
+    # initialize eos and species mass fractions
+    y = np.zeros(nspecies)
+    y_fuel = np.zeros(nspecies)
+    if nspecies == 2:
+        y[0] = 1
+        y_fuel[1] = 1
+        species_names = ["air", "fuel"]
+    elif nspecies > 2:
+        # find name species indicies
+        for i in range(nspecies):
+            if species_names[i] == "C2H4":
+                i_c2h4 = i
+            if species_names[i] == "H2":
+                i_h2 = i
+            if species_names[i] == "O2":
+                i_ox = i
+            if species_names[i] == "N2":
+                i_di = i
+
+        # Set the species mass fractions to the free-stream flow
+        y[i_ox] = mf_o2
+        y[i_di] = 1. - mf_o2
+        # Set the species mass fractions to the free-stream flow
+        y_fuel[i_c2h4] = mf_c2h4
+        y_fuel[i_h2] = mf_h2
 
     viz_path = "viz_data/"
     vizname = viz_path + casename
@@ -298,13 +305,28 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     pressure = eos_scalar.pressure(restart_cv)
     temperature = eos_scalar.temperature(restart_cv, temperature_seed)
 
+    # keep air and fuel mass fractions between 0 and 1
+    from mirgecom.limiter import bound_preserving_limiter
+    spec_lim = make_obj_array([
+        bound_preserving_limiter(discr, restart_cv.species_mass_fractions[i],
+                                 mmin=0.0, mmax=1.0, modify_average=True)
+        for i in range(2)
+    ])
+
+    # limit the sum to 1.0
+    #spec_lim = spec_lim/actx.np.sum(spec_lim)
+    aux = restart_cv.mass*0.0
+    for i in range(2):
+        aux = aux + spec_lim[i]
+    spec_lim = spec_lim/aux
+
     # air is species 0 in scalar sim
-    species_mass_frac_multi[i_ox] = mf_o2*species_mass_frac[0]
-    species_mass_frac_multi[i_di] = (1. - mf_o2)*species_mass_frac[0]
+    species_mass_frac_multi[i_ox] = mf_o2*spec_lim[0]
+    species_mass_frac_multi[i_di] = (1. - mf_o2)*spec_lim[0]
 
     # fuel is speices 1 in scalar sim
-    species_mass_frac_multi[i_c2h4] = mf_c2h4*species_mass_frac[1]
-    species_mass_frac_multi[i_h2] = mf_h2*species_mass_frac[1]
+    species_mass_frac_multi[i_c2h4] = mf_c2h4*spec_lim[1]
+    species_mass_frac_multi[i_h2] = mf_h2*spec_lim[1]
 
     internal_energy = eos.get_internal_energy(temperature=temperature,
         species_mass_fractions=species_mass_frac_multi)
@@ -355,7 +377,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         write_restart_file(actx, restart_data, restart_fname, comm)
 
     # write visualization and restart data
-    my_write_viz(step=current_step, t=current_t, 
+    my_write_viz(step=current_step, t=current_t,
                  cv=current_state.cv, dv=current_state.dv)
     my_write_restart(step=current_step, t=current_t, cv=current_state.cv,
                      temperature_seed=current_state.dv.temperature)

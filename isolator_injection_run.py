@@ -1389,7 +1389,7 @@ def main(ctx_factory=cl.create_some_context,
                                                         grad_cv=grad_cv)
 
                         fluid_state = create_fluid_state(cv=cv,
-                                                         smoothness=no_smoothness,
+                                                         smoothness=smoothness,
                                                          temperature_seed=tseed)
                         """
                         # avoid recomputation of temperature
@@ -1600,7 +1600,7 @@ def main(ctx_factory=cl.create_some_context,
 
         current_state = create_fluid_state(cv=current_cv,
                                            temperature_seed=tseed,
-                                           smoothness=no_smoothness)
+                                           smoothness=smoothness)
 
         """
         new_dv = replace(current_state.dv, smoothness=smoothness)
