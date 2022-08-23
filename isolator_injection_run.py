@@ -33,7 +33,6 @@ import pyopencl.array as cla  # noqa
 from functools import partial
 from pytools.obj_array import make_obj_array
 
-from arraycontext import thaw
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
@@ -62,7 +61,6 @@ from mirgecom.simutil import (
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
-import pyopencl.tools as cl_tools
 from mirgecom.integrators import (rk4_step, lsrk54_step, lsrk144_step,
                                   euler_step)
 from grudge.shortcuts import compiled_lsrk45_step
@@ -296,14 +294,13 @@ def main(ctx_factory=cl.create_some_context,
         queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
+    from mirgecom.simutil import get_reasonable_memory_pool
+    alloc = get_reasonable_memory_pool(cl_ctx, queue)
+
     if lazy:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                mpi_base_tag=12000)
+        actx = actx_class(comm, queue, mpi_base_tag=12000, allocator=alloc)
     else:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                force_device_scalars=True)
+        actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
 
     # default i/o junk frequencies
     nviz = 500
@@ -927,7 +924,7 @@ def main(ctx_factory=cl.create_some_context,
 
     sponge_init = InitSponge(x0=sponge_x0, thickness=sponge_thickness,
                              amplitude=sponge_amp)
-    x_vec = thaw(discr.nodes(), actx)
+    x_vec = actx.thaw(discr.nodes())
 
     def _sponge_sigma(x_vec):
         return sponge_init(x_vec=x_vec)
@@ -1015,8 +1012,6 @@ def main(ctx_factory=cl.create_some_context,
 
     def my_write_status(cv, dv, dt, cfl):
         status_msg = f"-------- dt = {dt:1.3e}, cfl = {cfl:1.4f}"
-        #temperature = thaw(freeze(dv.temperature, actx), actx)
-        #pressure = thaw(freeze(dv.pressure, actx), actx)
         p_min = vol_min(dv.pressure)
         p_max = vol_max(dv.pressure)
         t_min = vol_min(dv.temperature)
@@ -1137,8 +1132,8 @@ def main(ctx_factory=cl.create_some_context,
                        ("Pe_heat", cell_Pe_heat)]
             viz_fields.extend(viz_ext)
 
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
-                      step=step, t=t, overwrite=True)
+        write_visfile(discr=discr, io_fields=viz_fields, visualizer=visualizer,
+                      vizname=vizname, comm=comm, step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
@@ -1199,7 +1194,6 @@ def main(ctx_factory=cl.create_some_context,
             temp_err = vol_max(temp_resid)
             if temp_err > pyro_temp_tol:
                 health_error = True
-                #error = thaw(freeze(temp_err, actx), actx)
                 logger.info(f"Temperature is not converged "
                             f"{temp_err=} > {pyro_temp_tol}.")
 
