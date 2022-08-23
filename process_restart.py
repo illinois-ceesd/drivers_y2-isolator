@@ -99,9 +99,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     queue = cl.CommandQueue(cl_ctx)
 
-    actx = actx_class(
-        queue,
-        allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+    from mirgecom.simutil import get_reasonable_memory_pool
+    alloc = get_reasonable_memory_pool(cl_ctx, queue)
+
+    actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
 
     # working gas: O2/N2 #
     #   O2 mass fraction 0.273
