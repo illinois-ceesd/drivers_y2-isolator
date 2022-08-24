@@ -74,6 +74,7 @@ from mirgecom.boundary import (
 )
 from mirgecom.eos import IdealSingleGas, PyrometheusMixture
 from mirgecom.transport import (SimpleTransport,
+                                PowerLawTransport,
                                 ArtificialViscosityTransport,
                                 ArtificialViscosityTransportDiv)
 from mirgecom.gas_model import GasModel, make_fluid_state
@@ -341,6 +342,7 @@ def main(ctx_factory=cl.create_some_context,
     nspecies = 0
     pyro_temp_iter = 3  # for pyrometheus, number of newton iterations
     pyro_temp_tol = 1.e-4  # for pyrometheus, toleranace for temperature residual
+    transport_type = 0
 
     # rhs control
     use_ignition = False
@@ -429,6 +431,10 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             nspecies = int(input_data["nspecies"])
+        except KeyError:
+            pass
+        try:
+            transport_type = int(input_data["transport"])
         except KeyError:
             pass
         try:
@@ -623,11 +629,8 @@ def main(ctx_factory=cl.create_some_context,
 
     if rank == 0:
         print("\n#### Simluation material properties: ####")
-        print(f"\tmu = {mu}")
-        print(f"\tkappa = {kappa}")
         print(f"\tPrandtl Number  = {Pr}")
         print(f"\tnspecies = {nspecies}")
-        print(f"\tspecies diffusivity = {spec_diff}")
         if nspecies == 0:
             print("\tno passive scalars, uniform ideal gas eos")
         elif nspecies == 2:
@@ -635,12 +638,45 @@ def main(ctx_factory=cl.create_some_context,
         else:
             print("\tfull multi-species initialization with pyrometheus eos")
         if nlimit > 0:
-            print(f"\nSpecies mass fractions limited to [0:1] over {nlimit} steps")
+            print(f"\tSpecies mass fractions limited to [0:1] over {nlimit} steps")
+
+        transport_alpha = 0.6
+        transport_beta = 4.093e-7
+        transport_sigma = 2.0
+        transport_n = 0.666
+
+        if transport_type == 0:
+            print("\t Simple transport model:")
+            print("\t\t constant viscosity, species diffusivity")
+            print(f"\tmu = {mu}")
+            print(f"\tkappa = {kappa}")
+            print(f"\tspecies diffusivity = {spec_diff}")
+        elif transport_type == 1:
+            print("\t Power law transport model:")
+            print("\t\t temperature dependent viscosity, species diffusivity")
+            print(f"\ttransport_alpha = {transport_alpha}")
+            print(f"\ttransport_beta = {transport_beta}")
+            print(f"\ttransport_sigma = {transport_sigma}")
+            print(f"\ttransport_n = {transport_n}")
+            print(f"\tspecies diffusivity = {spec_diff}")
+        elif transport_type == 2:
+            print("\t Pyrometheus transport model:")
+            print("\t\t temperature/mass fraction dependence")
+        else:
+            error_message = "Unknown transport_type {}".format(transport_type)
+            raise RuntimeError(error_message)
 
     spec_diffusivity = spec_diff * np.ones(nspecies)
-    physical_transport_model = SimpleTransport(
-        viscosity=mu, thermal_conductivity=kappa,
-        species_diffusivity=spec_diffusivity)
+    if transport_type == 0:
+        physical_transport_model = SimpleTransport(
+            viscosity=mu, thermal_conductivity=kappa,
+            species_diffusivity=spec_diffusivity)
+    if transport_type == 1:
+        physical_transport_model = PowerLawTransport(
+            alpha=transport_alpha, beta=transport_beta,
+            sigma=transport_sigma, n=transport_n,
+            species_diffusivity=spec_diffusivity)
+
     if use_av == 0 or use_av == 1:
         transport_model = physical_transport_model
     elif use_av == 2:
