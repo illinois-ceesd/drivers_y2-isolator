@@ -167,7 +167,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             logging.info("Restarting soln.")
         current_cv = restart_data["cv"]
 
-    discr = EagerDGDiscretization(
+    dcoll = EagerDGDiscretization(
         actx, local_mesh, order=order, mpi_communicator=comm
     )
 
@@ -175,7 +175,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     cv = fluid_state.cv
     dv = fluid_state.dv
 
-    nodes = thaw(discr.nodes(), actx)
+    nodes = thaw(dcoll.nodes(), actx)
 
     xpos = nodes[0]
     ypos = nodes[1]

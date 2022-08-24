@@ -259,7 +259,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if rank == 0:
         logging.info("Making discretization")
 
-    discr = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
+    dcoll = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
 
     if rank == 0:
         logging.info("Done making discretization")
@@ -273,7 +273,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         restart_cv = restart_data["cv"]
         temperature_seed = restart_data["temperature_seed"]
         if restart_order != order:
-            restart_discr = EagerDGDiscretization(
+            restart_dcoll = EagerDGDiscretization(
                 actx,
                 local_mesh,
                 order=restart_order,
@@ -281,8 +281,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
-                discr.discr_from_dd("vol"),
-                restart_discr.discr_from_dd("vol")
+                dcoll.discr_from_dd("vol"),
+                restart_dcoll.discr_from_dd("vol")
             )
             restart_cv = connection(restart_data["cv"])
             temperature_seed = connection(restart_data["temperature_seed"])
@@ -322,7 +322,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     current_state = make_fluid_state(modified_cv, gas_model, temperature)
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     def my_write_viz(step, t, cv, dv):
 
@@ -337,7 +337,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
+        write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):
