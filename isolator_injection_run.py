@@ -63,6 +63,8 @@ from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
 from mirgecom.integrators import (rk4_step, lsrk54_step, lsrk144_step,
                                   euler_step)
+from mirgecom.inviscid import (inviscid_facial_flux_rusanov,
+                               inviscid_facial_flux_hll)
 from grudge.shortcuts import compiled_lsrk45_step
 
 from mirgecom.steppers import advance_state
@@ -334,6 +336,7 @@ def main(ctx_factory=cl.create_some_context,
     s0_sc = -5.0
     kappa_sc = 0.5
     dim = 2
+    inv_num_flux = "rusanov"
 
     # material properties
     mu = 1.0e-5
@@ -458,6 +461,10 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
+            inv_num_flux = input_data["inviscid_numerical_flux"]
+        except KeyError:
+            pass
+        try:
             health_pres_min = float(input_data["health_pres_min"])
         except KeyError:
             pass
@@ -514,6 +521,11 @@ def main(ctx_factory=cl.create_some_context,
     allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144", "compiled_lsrk54"]
     if integrator not in allowed_integrators:
         error_message = "Invalid time integrator: {}".format(integrator)
+        raise RuntimeError(error_message)
+
+    allowed_inv_num_flux = ["rusanov", "hll"]
+    if inv_num_flux not in allowed_inv_num_flux:
+        error_message = "Invalid inviscid flux function: {}".format(inv_num_flux)
         raise RuntimeError(error_message)
 
     if integrator == "compiled_lsrk54":
@@ -584,6 +596,11 @@ def main(ctx_factory=cl.create_some_context,
         timestepper = lsrk144_step
     if integrator == "compiled_lsrk54":
         timestepper = _compiled_stepper_wrapper
+
+    if inv_num_flux == "rusanov":
+        inviscid_numerical_flux_func = inviscid_facial_flux_rusanov
+    if inv_num_flux == "hll":
+        inviscid_numerical_flux_func = inviscid_facial_flux_hll
 
     # }}}
     # working gas: O2/N2 #
@@ -688,6 +705,7 @@ def main(ctx_factory=cl.create_some_context,
             physical_transport=physical_transport_model,
             av_mu=alpha_sc, av_prandtl=0.75)
 
+    chem_source_tol = 1.e-10
     # make the eos
     if nspecies < 3:
         eos = IdealSingleGas(gamma=gamma, gas_const=r)
@@ -696,7 +714,8 @@ def main(ctx_factory=cl.create_some_context,
         from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
         from uiuc import Thermochemistry
         pyro_mech = get_pyrometheus_wrapper_class(
-            pyro_class=Thermochemistry, temperature_niter=pyro_temp_iter)(actx.np)
+            pyro_class=Thermochemistry, temperature_niter=pyro_temp_iter,
+            zero_level=chem_source_tol)(actx.np)
         eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
         species_names = pyro_mech.species_names
 
@@ -1419,7 +1438,7 @@ def main(ctx_factory=cl.create_some_context,
                                                         grad_cv=grad_cv)
 
                         fluid_state = create_fluid_state(cv=cv,
-                                                         smoothness=no_smoothness,
+                                                         smoothness=smoothness,
                                                          temperature_seed=tseed)
                         """
                         # avoid recomputation of temperature
@@ -1547,6 +1566,7 @@ def main(ctx_factory=cl.create_some_context,
         ns_rhs = \
             ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
                 gas_model=gas_model, quadrature_tag=quadrature_tag,
+                inviscid_numerical_flux_func=inviscid_numerical_flux_func,
                 operator_states_quad=operator_fluid_states,
                 grad_cv=grad_fluid_cv)
 
@@ -1630,7 +1650,7 @@ def main(ctx_factory=cl.create_some_context,
 
         current_state = create_fluid_state(cv=current_cv,
                                            temperature_seed=tseed,
-                                           smoothness=no_smoothness)
+                                           smoothness=smoothness)
 
         """
         new_dv = replace(current_state.dv, smoothness=smoothness)
