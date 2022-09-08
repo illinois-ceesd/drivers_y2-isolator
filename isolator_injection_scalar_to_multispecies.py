@@ -172,9 +172,11 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     gamma = 1.4
     mw_o2 = 15.999*2
     mw_n2 = 14.0067*2
+    mw_c2h4 = 28.05
+    mw_h2 = 1.00784*2
     mf_o2 = 0.273
-    mf_c2h4 = 0.5
-    mf_h2 = 0.5
+    mf_c2h4 = mw_c2h4/(mw_c2h4 + mw_h2)
+    mf_h2 = 1 - mf_c2h4
     # visocsity @ 400C, Pa-s
     mu_o2 = 3.76e-5
     mu_n2 = 3.19e-5
