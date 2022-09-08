@@ -370,7 +370,8 @@ def main(ctx_factory=cl.create_some_context,
         spark_center[2] = 0.035/2.
     spark_diameter = 0.0025
 
-    spark_strength = 30000000./current_dt
+    #spark_strength = 30000000./current_dt
+    spark_strength = 20000000./current_dt
     #spark_strength = 5e-3
 
     spark_init_time = 999999999.
@@ -950,7 +951,8 @@ def main(ctx_factory=cl.create_some_context,
             cv=target_cv, dv=new_dv, eos=gas_model.eos)
         target_state = replace(target_state, tv=new_tv)
 
-    temperature_seed = current_state.temperature
+    # MJA use the seed from restart
+    # temperature_seed = current_state.temperature
 
     force_evaluation(actx, current_state)
     force_evaluation(actx, target_state)
@@ -1110,20 +1112,25 @@ def main(ctx_factory=cl.create_some_context,
 
     compute_production_rates = actx.compile(get_production_rates)
 
-    def my_write_viz(step, t, fluid_state, ts_field, alpha_field):
+    def my_write_viz(step, t, fluid_state, ts_field, alpha_field, cv_limited):
 
         cv = fluid_state.cv
         dv = fluid_state.dv
         mu = fluid_state.viscosity
 
+        """
         smoothness = dv.smoothness
         indicator = no_smoothness
         if use_av == 1:
-            smoothness = smoothness_indicator(discr, cv.mass, s0=s0_sc,
+            smoothness = smoothness_indicator(discr, cv_limited).mass, s0=s0_sc,
                                               kappa=kappa_sc)
 
+
+        fluid_state_limited = create_fluid_state(cv=cv_limited,
+                                                 smoothness=no_smoothness,
+                                                 temperature_seed=tseed)
         grad_cv = grad_cv_operator(discr, gas_model, boundaries,
-                                   fluid_state, time=current_t,
+                                   fluid_state_limited, time=current_t,
                                    quadrature_tag=quadrature_tag)
         from mirgecom.fluid import velocity_gradient
         grad_v = velocity_gradient(cv, grad_cv)
@@ -1138,28 +1145,35 @@ def main(ctx_factory=cl.create_some_context,
             indicator = -alpha_sc*length_scales*div_v/c_star
 
             # make a smoothness indicator
-            smoothness = compute_smoothness(cv, dv, grad_cv)
+            smoothness = compute_smoothness(cv_limited, dv, grad_cv)
+        """
 
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
                             dv.speed_of_sound)
 
         viz_fields = [("cv", cv),
+                      ("cv_limited", cv_limited),
                       ("dv", dv),
                       ("mach", mach),
                       ("rank", rank),
                       ("velocity", cv.velocity),
-                      ("grad_v_x", grad_v[0]),
-                      ("grad_v_y", grad_v[1]),
-                      ("div_v", div_v),
+                      # ("grad_v_x", grad_v[0]),
+                      # ("grad_v_y", grad_v[1]),
+                      # ("div_v", div_v),
                       ("sponge_sigma", sponge_sigma),
                       ("alpha", alpha_field),
-                      ("indicator", indicator),
-                      ("smoothness", smoothness),
+                      # ("indicator", indicator),
+                      # ("smoothness", smoothness),
                       ("mu", mu),
                       ("dt" if constant_cfl else "cfl", ts_field)]
         # species mass fractions
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
+            for i in range(nspecies))
+
+        # unlimited species mass fractions
+        viz_fields.extend(
+            ("Y_limited_"+species_names[i], cv_limited.species_mass_fractions[i])
             for i in range(nspecies))
 
         if nspecies > 2:
@@ -1384,6 +1398,7 @@ def main(ctx_factory=cl.create_some_context,
 
     def my_pre_step(step, t, dt, state):
 
+        cv, tseed = state
         try:
             if logmgr:
                 logmgr.tick_before()
@@ -1393,15 +1408,19 @@ def main(ctx_factory=cl.create_some_context,
             do_health = check_step(step=step, interval=nhealth)
             do_status = check_step(step=step, interval=nstatus)
 
-            if any([do_viz, do_restart, do_health, do_status]):
-                cv, tseed = state
+            # do this all the time so we can update tseed
+            fluid_state = create_fluid_state(cv=cv,
+                                             temperature_seed=tseed,
+                                             smoothness=no_smoothness)
+            state = make_obj_array([cv, fluid_state.temperature])
 
-                limit_species_rhs = 0.*cv
+            if any([do_viz, do_restart, do_health, do_status]):
+
+                # compute the limited cv so we can viz what the rhs will actually see
+                cv_limited = cv
                 if limit_species:
-                    fluid_state = create_fluid_state(cv=cv,
-                                                     temperature_seed=tseed,
-                                                     smoothness=no_smoothness)
-                    cv, limit_species_rhs = limit_species_source_compiled(
+                    limit_species_rhs = 0.*cv
+                    cv_limited, limit_species_rhs = limit_species_source_compiled(
                         cv=cv, pressure=fluid_state.pressure,
                         temperature=fluid_state.temperature,
                         species_enthalpies=fluid_state.species_enthalpies)
@@ -1411,14 +1430,17 @@ def main(ctx_factory=cl.create_some_context,
                                                      smoothness=no_smoothness,
                                                      temperature_seed=tseed)
                 elif use_av == 2:
-                    smoothness = smoothness_indicator(discr, cv.mass,
+                    # limited cv here to compute smoothness
+                    smoothness = smoothness_indicator(discr, cv_limited.mass,
                                                       kappa=kappa_sc, s0=s0_sc)
                     force_evaluation(actx, smoothness)
+                    # unlimited cv here as that is what gets written
                     fluid_state = create_fluid_state(cv=cv,
                                                      smoothness=smoothness,
                                                      temperature_seed=tseed)
                 elif use_av == 3:
-                    fluid_state = create_fluid_state(cv=cv,
+                    # limited cv here to compute smoothness
+                    fluid_state = create_fluid_state(cv=cv_limited,
                                                      smoothness=no_smoothness,
                                                      temperature_seed=tseed)
 
@@ -1427,16 +1449,18 @@ def main(ctx_factory=cl.create_some_context,
                     # not sure why the compiled version of grad_cv doesn't work
                     if do_viz:
                         # use the divergence to compute the smoothness field
-                        force_evaluation(actx, t)
+                        # force_evaluation(actx, t)
                         grad_cv = grad_cv_operator(
                             discr, gas_model, boundaries, fluid_state,
                             time=t, quadrature_tag=quadrature_tag)
                         # grad_cv = grad_cv_operator_compiled(fluid_state,
                         #                                     time=t)
-                        smoothness = compute_smoothness(cv=cv,
+                        # limited cv here to compute smoothness
+                        smoothness = compute_smoothness(cv=cv_limited,
                                                         dv=fluid_state.dv,
                                                         grad_cv=grad_cv)
 
+                        # unlimited cv here as that is what gets written
                         fluid_state = create_fluid_state(cv=cv,
                                                          smoothness=smoothness,
                                                          temperature_seed=tseed)
@@ -1473,13 +1497,14 @@ def main(ctx_factory=cl.create_some_context,
 
             if do_viz:
                 my_write_viz(step=step, t=t, fluid_state=fluid_state,
-                             ts_field=ts_field, alpha_field=alpha_field)
+                             ts_field=ts_field, alpha_field=alpha_field,
+                             cv_limited=cv_limited)
 
         except MyRuntimeError:
             if rank == 0:
                 logger.error("Errors detected; attempting graceful exit.")
             my_write_viz(step=step, t=t, fluid_state=fluid_state, ts_field=ts_field,
-                         alpha_field=alpha_field)
+                         alpha_field=alpha_field, cv_limited=cv_limited)
             my_write_restart(step=step, t=t, cv=cv, temperature_seed=tseed)
             raise
 
@@ -1489,6 +1514,7 @@ def main(ctx_factory=cl.create_some_context,
         if logmgr:
             set_dt(logmgr, dt)
             logmgr.tick_after()
+
         return state, dt
 
     def my_rhs(t, state):
@@ -1550,7 +1576,8 @@ def main(ctx_factory=cl.create_some_context,
             """
 
         # Temperature seed RHS (keep tseed updated)
-        tseed_rhs = fluid_state.temperature - tseed
+        # MJA not correct for non-constant dt!!!
+        tseed_rhs = (fluid_state.temperature - tseed)/current_dt
 
         # Steps common to NS and AV (and wall model needs grad(temperature))
         operator_fluid_states = make_operator_fluid_states(
@@ -1616,11 +1643,12 @@ def main(ctx_factory=cl.create_some_context,
         logger.info("Checkpointing final state ...")
 
     limit_species_rhs = 0*current_state.cv
+    current_cv_limited = current_cv
     if limit_species:
         fluid_state = create_fluid_state(cv=current_state.cv,
                                          temperature_seed=tseed,
                                          smoothness=no_smoothness)
-        cv, limit_species_rhs = limit_species_source(
+        current_cv_limited, limit_species_rhs = limit_species_source(
             cv=current_state.cv, pressure=fluid_state.pressure,
             temperature=fluid_state.temperature,
             species_enthalpies=fluid_state.species_enthalpies)
@@ -1630,13 +1658,13 @@ def main(ctx_factory=cl.create_some_context,
                                            smoothness=no_smoothness,
                                            temperature_seed=tseed)
     elif use_av == 2:
-        smoothness = smoothness_indicator(discr, current_cv.mass,
+        smoothness = smoothness_indicator(discr, current_cv_limited.mass,
                                           kappa=kappa_sc, s0=s0_sc)
         current_state = create_fluid_state(cv=current_cv,
                                            temperature_seed=tseed,
                                            smoothness=smoothness)
     elif use_av == 3:
-        current_state = create_fluid_state(cv=current_cv,
+        current_state = create_fluid_state(cv=current_cv_limited,
                                            temperature_seed=tseed,
                                            smoothness=no_smoothness)
 
@@ -1652,11 +1680,6 @@ def main(ctx_factory=cl.create_some_context,
                                            temperature_seed=tseed,
                                            smoothness=smoothness)
 
-        """
-        new_dv = replace(current_state.dv, smoothness=smoothness)
-        current_state = replace(current_state, dv=new_dv)
-        """
-
     final_dv = current_state.dv
     alpha_field = my_get_alpha(current_state, alpha_sc)
     ts_field, cfl, dt = my_get_timestep(t=current_t, dt=current_dt,
@@ -1664,7 +1687,8 @@ def main(ctx_factory=cl.create_some_context,
     my_write_status(dt=dt, cfl=cfl, cv=current_state.cv, dv=final_dv)
 
     my_write_viz(step=current_step, t=current_t, fluid_state=current_state,
-                 ts_field=ts_field, alpha_field=alpha_field)
+                 ts_field=ts_field, alpha_field=alpha_field,
+                 cv_limited=current_cv_limited)
     my_write_restart(step=current_step, t=current_t, cv=current_state.cv,
                      temperature_seed=tseed)
 
