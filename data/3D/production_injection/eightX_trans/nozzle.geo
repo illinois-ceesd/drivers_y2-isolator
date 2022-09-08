@@ -648,126 +648,23 @@ y_isolator_top = 0.01167548819733;
 y_isolator_bottom = -0.0083245;
 box_tol = 0.0001;
 
-// the center of each box, which should be bl_thickness X bl_thickness in width
-// each box has an expected orientation that will define which direction a
-// proressive spacing will be applied in X/Y
-// inlet
-x_coords[] += 0.21;
-y_coords[] += -0.0270645 + bl_thickness/2.;
-z_coords[] += 0. + bl_thickness;
-//  aft-bottom
-orient[] += {1, 1, 1};
-x_coords[] += 0.21;
-y_coords[] += -0.0270645 + bl_thickness/2.;
-z_coords[] += 0.035 - bl_thickness/2.;
-//fore-bottom
-orient[] += {1, 1, -1};
-x_coords[] += 0.21;
-y_coords[] += 0.0270645 - bl_thickness/2.;
-z_coords[] += 0. + bl_thickness;
-// aft-top
-orient[] += {1, -1, 1};
-x_coords[] += 0.21;
-y_coords[] += 0.0270645 - bl_thickness/2.;
-z_coords[] += 0.035 - bl_thickness/2.;
-// fore-top
-orient[] += {1, -1, -1};
-// isolator
-x_coords[] += x_isolator_start;
-y_coords[] += y_isolator_bottom + bl_thickness/2.;
-z_coords[] += 0. + bl_thickness;
-orient[] += {1, 1, 1};
-x_coords[] += x_isolator_start;
-y_coords[] += y_isolator_bottom + bl_thickness/2.;
-z_coords[] += 0.035 - bl_thickness/2.;
-orient[] += {1, 1, -1};
-x_coords[] += x_isolator_start;
-y_coords[] += y_isolator_top - bl_thickness/2.;
-z_coords[] += 0. + bl_thickness;
-orient[] += {1, -1, 1};
-x_coords[] += x_isolator_start;
-y_coords[] += y_isolator_top - bl_thickness/2.;
-z_coords[] += 0.035 - bl_thickness/2.;
-orient[] += {1, -1, -1};
-
-//Printf("orient length %g",#orient[]);
-//For i In {0:#orient[]-1}
-    //Printf("orient[%g]: %g",i,orient[i]);
-//EndFor
-
-// vertical edges that define the bl-spacing
-// surfaces have x-normal on the top/bottom/fore/aft corners
-For i In {0:#x_coords[]-1}
-    //Printf("x_coords[%g] = %g",i,x_coords[i]);
-    //Printf("y_coords[%g] = %g",i,y_coords[i]);
-    //Printf("z_coords[%g] = %g",i,z_coords[i]);
-    edges[] = Curve In BoundingBox {
-        x_coords[i] - box_tol, y_coords[i] - bl_thickness/2. - box_tol, z_coords[i] - bl_thickness - box_tol,
-        x_coords[i] + box_tol, y_coords[i] + bl_thickness/2. + box_tol, z_coords[i] + bl_thickness + box_tol
-    };
-    // loop over all edges to determine orientation
-    For j In {0:#edges[]-1}
-        Printf("orig edges: %g",edges[j]);
-
-        edge_points[] = PointsOf{Line{edges[j]};};
-        p1[]=Point{edge_points[0]};
-        p2[]=Point{edge_points[1]};
-        dir[] = orient[3*i];
-        dir[] += orient[3*i+1];
-        dir[] += orient[3*i+2];
-        //For mm In {0:2}
-            ////dir[] += orient[3*i+mm];
-            //Printf("dir[%g]: %g", mm, dir[mm]);
-        //EndFor
-
-
-        For k In {0:2}
-            //Printf("p1[%g]: %e", k, p1[k]);
-            //Printf("p2[%g]: %e", k, p2[k]);
-            //If (p1[k] > p2[k])
-            If (Abs(p1[k] - p2[k]) > 1.e-10)
-                If ((p1[k] - p2[k]) > 1.e-10)
-                    //Printf("top");
-                    edges[j] *= -1*dir[k];
-                Else
-                    //Printf("bottom");
-                    edges[j] *= dir[k];
-                EndIf
-            EndIf
-        EndFor
-
-        //Printf("final edges: %g",edges[j]);
-        bl_corner_vert_edges[] += edges[j];
-    EndFor
-
-    bl_corner_surfaces[] += Surface In BoundingBox {
-        x_coords[i] - box_tol, y_coords[i] - bl_thickness/2. - box_tol, z_coords[i] - bl_thickness - box_tol,
-        x_coords[i] + box_tol, y_coords[i] + bl_thickness/2. + box_tol, z_coords[i] + bl_thickness + box_tol
-    };
-EndFor
-
-Printf("Old way");
-
-Printf("bl_corner_vert_edges length = %g", #bl_corner_vert_edges[]);
-For i In {0:#bl_corner_vert_edges[]-1}
-    Printf("bl_corner_vert_edges: %g",bl_corner_vert_edges[i]);
-EndFor
-Printf("bl_corner_surfaces length = %g", #bl_corner_surfaces[]);
-For i In {0:#bl_corner_surfaces[]-1}
-    Printf("bl_corner_surfaces: %g",bl_corner_surfaces[i]);
-EndFor
-
-Printf("New way");
-
-
 // given an array of edges, find their proper orientation
 // according to the array orient based on the orientation of the
 // point coordinates
-Macro EdgeOrientation
+// bb is the bounding box for the volume we're querying
+Macro EdgeAndSurfaces
+
+    // x0 end
+    begin_save = bb[0];
+    end_save = bb[3];
+
+    bb[0] = begin_save - box_tol;
+    bb[3] = begin_save + box_tol;
+    surfaces[] = Surface In BoundingBox {bb[]};
+    edges[] = Curve In BoundingBox { bb[] };
+
     // loop over all edges to determine orientation
     For j In {0:#edges[]-1}
-        Printf("orig edges: %g",edges[j]);
-    
         edge_points[] = PointsOf{Line{edges[j]};};
         p1[]=Point{edge_points[0]};
         p2[]=Point{edge_points[1]};
@@ -783,303 +680,122 @@ Macro EdgeOrientation
         EndFor
     EndFor
 
+    bb[0] = end_save - box_tol;
+    bb[3] = end_save + box_tol;
+    surfaces[] += Surface In BoundingBox {bb[]};
+    edges2[] = Curve In BoundingBox { bb[] };
+
+    // loop over all edges to determine orientation
+    For j In {0:#edges2[]-1}
+        edge_points[] = PointsOf{Line{edges2[j]};};
+        p1[]=Point{edge_points[0]};
+        p2[]=Point{edge_points[1]};
+    
+        For k In {0:2}
+            If (Abs(p1[k] - p2[k]) > 1.e-10)
+                If ((p1[k] - p2[k]) > 1.e-10)
+                    edges2[j] *= -1*edge_orient[k];
+                Else
+                    edges2[j] *= edge_orient[k];
+                EndIf
+            EndIf
+        EndFor
+    EndFor
+
+    edges[] += edges2[];
+
 Return
 
+// fore/aft/top/bottom corners
 //  aft-bottom
 edge_orient[] = {1, 1, 1};
 bb[] = BoundingBox Volume{surface_vector_bottom_bl_aft_bl[1]};
-bb[3] = bb[0] + box_tol;
-bb[0] -= box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
+Call EdgeAndSurfaces;
+bl_corner_vert_edges[] = edges[];
+bl_corner_surfaces[] = surfaces[];
 
 //fore-bottom
-orient[] += {1, 1, -1};
+edge_orient[] = {1, 1, -1};
 bb[] = BoundingBox Volume{surface_vector_bottom_bl_fore_bl[1]};
-bb[3] = bb[0] + box_tol;
-bb[0] -= box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
+Call EdgeAndSurfaces;
+bl_corner_vert_edges[] += edges[];
+bl_corner_surfaces[] += surfaces[];
 
 // aft-top
-orient[] += {1, -1, 1};
+edge_orient[] = {1, -1, 1};
 bb[] = BoundingBox Volume{surface_vector_top_bl_aft_bl[1]};
-bb[3] = bb[0] + box_tol;
-bb[0] -= box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
+Call EdgeAndSurfaces;
+bl_corner_vert_edges[] += edges[];
+bl_corner_surfaces[] += surfaces[];
 
 // fore-top
-orient[] += {1, -1, -1};
+edge_orient[] = {1, -1, -1};
 bb[] = BoundingBox Volume{surface_vector_top_bl_fore_bl[1]};
-bb[3] = bb[0] + box_tol;
-bb[0] -= box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
-
-//  aft-bottom end
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{surface_vector_bottom_bl_aft_bl[1]};
-bb[0] = bb[3] - box_tol;
-bb[3] += box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
-
-//fore-bottom end
-orient[] += {1, 1, -1};
-bb[] = BoundingBox Volume{surface_vector_bottom_bl_fore_bl[1]};
-bb[0] = bb[3] - box_tol;
-bb[3] += box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
-
-// aft-top end
-orient[] += {1, -1, 1};
-bb[] = BoundingBox Volume{surface_vector_top_bl_aft_bl[1]};
-bb[0] = bb[3] - box_tol;
-bb[3] += box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
-
-// fore-top end
-orient[] += {1, -1, -1};
-bb[] = BoundingBox Volume{surface_vector_top_bl_fore_bl[1]};
-bb[0] = bb[3] - box_tol;
-bb[3] += box_tol;
-bl_corner_surfaces2[] += Surface In BoundingBox {bb[]};
-edges[] = Curve In BoundingBox { bb[] };
-Call EdgeOrientation;
-bl_corner_vert_edges2[] += edges[];
+Call EdgeAndSurfaces;
+bl_corner_vert_edges[] += edges[];
+bl_corner_surfaces[] += surfaces[];
     
-Printf("bl_corner_vert_edges2 length = %g", #bl_corner_vert_edges2[]);
-For i In {0:#bl_corner_vert_edges2[]-1}
-    Printf("bl_corner_vert_edges2: %g",bl_corner_vert_edges2[i]);
+Printf("bl_corner_vert_edges length = %g", #bl_corner_vert_edges[]);
+For i In {0:#bl_corner_vert_edges[]-1}
+    Printf("bl_corner_vert_edges: %g",bl_corner_vert_edges[i]);
 EndFor
-Printf("bl_corner_surfaces2 length = %g", #bl_corner_surfaces2[]);
-For i In {0:#bl_corner_surfaces2[]-1}
-    Printf("bl_corner_surfaces2: %g",bl_corner_surfaces2[i]);
+Printf("bl_corner_surfaces length = %g", #bl_corner_surfaces[]);
+For i In {0:#bl_corner_surfaces[]-1}
+    Printf("bl_corner_surfaces: %g",bl_corner_surfaces[i]);
 EndFor
 
 
-Abort;
 
-// fore and aft bl planes
-// inlet
-x_center[] = 0.21;
-y_center[] = 0.;
-z_center[] = bl_thickness/2.;
-x_extent[] = 0.;
-y_extent[] = 2*0.0270645 - 2*bl_thickness;
-z_extent[] = bl_thickness;
-orient[] = {1, 1, 1};
-x_center[] += 0.21;
-y_center[] += 0.;
-z_center[] += 0.035 - bl_thickness/2.;
-x_extent[] += 0.;
-y_extent[] += 2*0.0270645 - 2*bl_thickness;
-z_extent[] += bl_thickness;
-orient[] += {1, 1, -1};
-// isolator
-x_center[] += x_isolator_start;
-y_center[] += y_isolator_bottom + (y_isolator_top-y_isolator_bottom)/2.;
-z_center[] += bl_thickness/2.;
-x_extent[] += 0.;
-y_extent[] += y_isolator_top-y_isolator_bottom - 2*bl_thickness;
-z_extent[] += bl_thickness;
-orient[] += {1, 1, 1};
-x_center[] += x_isolator_start;
-y_center[] += y_isolator_bottom + (y_isolator_top-y_isolator_bottom)/2.;
-z_center[] += 0.035 - bl_thickness/2.;
-x_extent[] += 0.;
-y_extent[] += y_isolator_top-y_isolator_bottom - 2*bl_thickness;
-z_extent[] += bl_thickness;
-orient[] += {1, 1, -1};
+//  fore/aft/top/bottom side planes/edges
+//  we don't need the orientation information here, so just remove it so we can easily subtract the 
+//  corner edges
+//  bottom
+edge_orient[] = {1, 1, 1};
+bb[] = BoundingBox Volume{surface_vector_interior_bottom_bl[1]};
+Call EdgeAndSurfaces;
+bl_bottom_edges[] = Abs(edges[]);
+bl_bottom_surfaces[] = surfaces[];
 
-For i In {0:#x_center[]-1}
-    //Printf("x_center[%g] = %g",i,x_center[i]);
-    //Printf("y_center[%g] = %g",i,y_center[i]);
-    //Printf("z_center[%g] = %g",i,z_center[i]);
-    edges[] = Curve In BoundingBox {
-        x_center[i] - x_extent[i]/2. - box_tol, 
-        y_center[i] - y_extent[i]/2. - box_tol, 
-        z_center[i] - z_extent[i]/2. - box_tol,
-        x_center[i] + x_extent[i]/2. + box_tol, 
-        y_center[i] + y_extent[i]/2. + box_tol, 
-        z_center[i] + z_extent[i]/2. + box_tol
-    };
-    // loop over all edges to determine orientation
-    For j In {0:#edges[]-1}
-        Printf("orig edges: %g",edges[j]);
+// top
+//edge_orient[] = {1, -1, 1};
+bb[] = BoundingBox Volume{surface_vector_interior_top_bl[1]};
+Call EdgeAndSurfaces;
+bl_top_edges[] = Abs(edges[]);
+bl_top_surfaces[] = surfaces[];
 
-        edge_points[] = PointsOf{Line{edges[j]};};
-        p1[]=Point{edge_points[0]};
-        p2[]=Point{edge_points[1]};
-        dir[] = orient[3*i];
-        dir[] += orient[3*i+1];
-        dir[] += orient[3*i+2];
-        //For mm In {0:2}
-            ////dir[] += orient[3*i+mm];
-            //Printf("dir[%g]: %g", mm, dir[mm]);
-        //EndFor
+// aft
+//edge_orient[] = {1, 1, -1};
+bb[] = BoundingBox Volume{surface_vector_interior_aft_bl[1]};
+Call EdgeAndSurfaces;
+bl_aft_edges[] = Abs(edges[]);
+bl_aft_surfaces[] = surfaces[];
 
-
-        For k In {0:2}
-            //Printf("p1[%g]: %e", k, p1[k]);
-            //Printf("p2[%g]: %e", k, p2[k]);
-            //If (p1[k] > p2[k])
-            If (Abs(p1[k] - p2[k]) > 1.e-10)
-                If ((p1[k] - p2[k]) > 1.e-10)
-                    //Printf("top");
-                    edges[j] *= -1*dir[k];
-                Else
-                    //Printf("bottom");
-                    edges[j] *= dir[k];
-                EndIf
-            EndIf
-        EndFor
-
-        //Printf("final edges: %g",edges[j]);
-        bl_fore_aft_edges[] += edges[j];
-    EndFor
-
-    bl_fore_aft_surfaces[] += Surface In BoundingBox {
-        x_center[i] - x_extent[i]/2. - box_tol, 
-        y_center[i] - y_extent[i]/2. - box_tol, 
-        z_center[i] - z_extent[i]/2. - box_tol,
-        x_center[i] + x_extent[i]/2. + box_tol, 
-        y_center[i] + y_extent[i]/2. + box_tol, 
-        z_center[i] + z_extent[i]/2. + box_tol
-    };
-EndFor
+// fore
+//edge_orient[] = {1, 1, 1};
+bb[] = BoundingBox Volume{surface_vector_interior_fore_bl[1]};
+Call EdgeAndSurfaces;
+bl_fore_edges[] = Abs(edges[]);
+bl_fore_surfaces[] = surfaces[];
 
 // remove the short edges
 //
-bl_fore_aft_edges[] -= bl_corner_vert_edges[]; 
+bl_fore_edges[] -= Abs(bl_corner_vert_edges[]); 
+bl_aft_edges[] -= Abs(bl_corner_vert_edges[]); 
+bl_top_edges[] -= Abs(bl_corner_vert_edges[]); 
+bl_bottom_edges[] -= Abs(bl_corner_vert_edges[]); 
 
-Printf("bl_fore_aft_edges length = %g", #bl_fore_aft_edges[]);
-For i In {0:#bl_fore_aft_edges[]-1}
-    Printf("bl_fore_aft_edges: %g",bl_fore_aft_edges[i]);
+Printf("bl_aft_edges length = %g", #bl_aft_edges[]);
+Printf("bl_fore_edges length = %g", #bl_fore_edges[]);
+Printf("bl_top_edges length = %g", #bl_top_edges[]);
+Printf("bl_bottom_edges length = %g", #bl_bottom_edges[]);
+For i In {0:#bl_aft_edges[]-1}
+    Printf("bl_aft_edges: %g",bl_aft_edges[i]);
 EndFor
-Printf("bl_fore_aft_surfaces length = %g", #bl_fore_aft_surfaces[]);
-For i In {0:#bl_fore_aft_surfaces[]-1}
-    Printf("bl_fore_aft_surfaces: %g",bl_fore_aft_surfaces[i]);
-EndFor
-
-// top and bottom bl planes
-// inlet
-x_center[] = 0.21;
-y_center[] = 0.0270645 - bl_thickness/2.;
-z_center[] = 0.035/2.;
-x_extent[] = 0.;
-y_extent[] = bl_thickness;
-z_extent[] = 0.035 - 2*bl_thickness;
-orient[] = {1, -1, 1};
-x_center[] += 0.21;
-y_center[] += -0.0270645 + bl_thickness/2.;
-z_center[] += 0.035/2.;
-x_extent[] += 0.;
-y_extent[] += bl_thickness;
-z_extent[] += 0.035 - 2*bl_thickness;
-orient[] += {1, 1, 1};
-// isolator
-x_center[] += x_isolator_start;
-y_center[] += y_isolator_top - bl_thickness/2.;
-z_center[] += 0.035/2.;
-x_extent[] += 0.;
-y_extent[] += bl_thickness;
-z_extent[] += 0.035 - 2*bl_thickness;
-orient[] += {1, -1, 1};
-x_center[] += x_isolator_start;
-y_center[] += y_isolator_bottom + bl_thickness/2.;
-z_center[] += 0.035/2.;
-x_extent[] += 0.;
-y_extent[] += bl_thickness;
-z_extent[] += 0.035 - 2*bl_thickness;
-orient[] += {1, 1, 1};
-
-For i In {0:#x_center[]-1}
-    //Printf("x_center[%g] = %g",i,x_center[i]);
-    //Printf("y_center[%g] = %g",i,y_center[i]);
-    //Printf("z_center[%g] = %g",i,z_center[i]);
-    edges[] = Curve In BoundingBox {
-        x_center[i] - x_extent[i]/2. - box_tol, 
-        y_center[i] - y_extent[i]/2. - box_tol, 
-        z_center[i] - z_extent[i]/2. - box_tol,
-        x_center[i] + x_extent[i]/2. + box_tol, 
-        y_center[i] + y_extent[i]/2. + box_tol, 
-        z_center[i] + z_extent[i]/2. + box_tol
-    };
-    // loop over all edges to determine orientation
-    For j In {0:#edges[]-1}
-        Printf("orig edges: %g",edges[j]);
-
-        edge_points[] = PointsOf{Line{edges[j]};};
-        p1[]=Point{edge_points[0]};
-        p2[]=Point{edge_points[1]};
-        dir[] = orient[3*i];
-        dir[] += orient[3*i+1];
-        dir[] += orient[3*i+2];
-        //For mm In {0:2}
-            ////dir[] += orient[3*i+mm];
-            //Printf("dir[%g]: %g", mm, dir[mm]);
-        //EndFor
-
-
-        For k In {0:2}
-            //Printf("p1[%g]: %e", k, p1[k]);
-            //Printf("p2[%g]: %e", k, p2[k]);
-            //If (p1[k] > p2[k])
-            If (Abs(p1[k] - p2[k]) > 1.e-10)
-                If ((p1[k] - p2[k]) > 1.e-10)
-                    //Printf("top");
-                    edges[j] *= -1*dir[k];
-                Else
-                    //Printf("bottom");
-                    edges[j] *= dir[k];
-                EndIf
-            EndIf
-        EndFor
-
-        //Printf("final edges: %g",edges[j]);
-        bl_top_bottom_edges[] += edges[j];
-    EndFor
-
-    bl_top_bottom_surfaces[] += Surface In BoundingBox {
-        x_center[i] - x_extent[i]/2. - box_tol, 
-        y_center[i] - y_extent[i]/2. - box_tol, 
-        z_center[i] - z_extent[i]/2. - box_tol,
-        x_center[i] + x_extent[i]/2. + box_tol, 
-        y_center[i] + y_extent[i]/2. + box_tol, 
-        z_center[i] + z_extent[i]/2. + box_tol
-    };
+Printf("bl_aft_surfaces length = %g", #bl_aft_surfaces[]);
+For i In {0:#bl_aft_surfaces[]-1}
+    Printf("bl_aft_surfaces: %g",bl_aft_surfaces[i]);
 EndFor
 
-// remove the short edges
-//
-bl_top_bottom_edges[] -= bl_corner_vert_edges[]; 
-
-Printf("bl_top_bottom_edges length = %g", #bl_top_bottom_edges[]);
-For i In {0:#bl_top_bottom_edges[]-1}
-    Printf("bl_top_bottom_edges: %g",bl_top_bottom_edges[i]);
-EndFor
-Printf("bl_top_bottom_surfaces length = %g", #bl_top_bottom_surfaces[]);
-For i In {0:#bl_top_bottom_surfaces[]-1}
-    Printf("bl_top_bottom_surfaces: %g",bl_top_bottom_surfaces[i]);
-EndFor
 //
 // long corner edges
 // we can construct from the already discovered edges and the existing volumes
@@ -1114,7 +830,7 @@ EndFor
 //
 exterior_surfaces[] = CombinedBoundary { Volume {fluid_volume[]}; };
 interior_surfaces[] = Boundary { Volume { surface_vector_interior[1]}; };
-// remove the inlet/outlet planes
+ remove the inlet/outlet planes
 interior_surfaces[] -= exterior_surfaces[];
 Printf("exterior_surfaces length = %g", #exterior_surfaces[]);
 For i In {0:#exterior_surfaces[]-1}
@@ -1123,56 +839,6 @@ EndFor
 Printf("interior_surfaces length = %g", #interior_surfaces[]);
 For i In {0:#interior_surfaces[]-1}
     Printf("interior_surfaces: %g",interior_surfaces[i]);
-EndFor
-//
-// fore/aft/top/bottom plane edges
-// we can construct from the already discovered edges and the existing volumes
-// 
-bl_fore_surfaces[] = Surface In BoundingBox { BoundingBox Volume{ surface_vector_interior_fore_bl[1]} };
-bl_aft_surfaces[] += Surface In BoundingBox { BoundingBox Volume{ surface_vector_interior_aft_bl[1]} };
-bl_top_surfaces[] += Surface In BoundingBox { BoundingBox Volume{ surface_vector_interior_top_bl[1]} };
-bl_bottom_surfaces[] += Surface In BoundingBox { BoundingBox Volume{ surface_vector_interior_bottom_bl[1]} };
-
-// remove the side surfaces
-bl_fore_surfaces[] -= exterior_surfaces[];
-bl_fore_surfaces[] -= interior_surfaces[];
-bl_aft_surfaces[] -= exterior_surfaces[];
-bl_aft_surfaces[] -= interior_surfaces[];
-bl_top_surfaces[] -= exterior_surfaces[];
-bl_top_surfaces[] -= interior_surfaces[];
-bl_bottom_surfaces[] -= exterior_surfaces[];
-bl_bottom_surfaces[] -= interior_surfaces[];
-
-// get the edges
-For i In {0:#bl_fore_surfaces[]-1}
-    bl_fore_edges[] += Curve In BoundingBox { BoundingBox Surface{ bl_fore_surfaces[i] } };
-    bl_aft_edges[] += Curve In BoundingBox { BoundingBox Surface{ bl_aft_surfaces[i] } };
-    bl_top_edges[] += Curve In BoundingBox { BoundingBox Surface{ bl_top_surfaces[i] } };
-    bl_bottom_edges[] += Curve In BoundingBox { BoundingBox Surface{ bl_bottom_surfaces[i] } };
-EndFor
-
-// remove the end edges
-bl_fore_edges[] = Unique(bl_fore_edges[]);
-bl_aft_edges[] = Unique(bl_aft_edges[]);
-bl_top_edges[] = Unique(bl_top_edges[]);
-bl_bottom_edges[] = Unique(bl_bottom_edges[]);
-bl_fore_edges[] -= Abs(bl_corner_vert_edges[]);
-bl_fore_edges[] -= Abs(bl_long_edges[]);
-bl_aft_edges[] -= Abs(bl_corner_vert_edges[]);
-bl_aft_edges[] -= Abs(bl_long_edges[]);
-bl_top_edges[] -= Abs(bl_corner_vert_edges[]);
-bl_top_edges[] -= Abs(bl_long_edges[]);
-bl_bottom_edges[] -= Abs(bl_corner_vert_edges[]);
-bl_bottom_edges[] -= Abs(bl_long_edges[]);
-
-
-Printf("bl_fore_edges length = %g", #bl_fore_edges[]);
-For i In {0:#bl_fore_edges[]-1}
-    Printf("bl_fore_edges: %g",bl_fore_edges[i]);
-EndFor
-Printf("bl_fore_surfaces length = %g", #bl_fore_surfaces[]);
-For i In {0:#bl_fore_surfaces[]-1}
-    Printf("bl_fore_surfaces: %g",bl_fore_surfaces[i]);
 EndFor
 
 /////////////////////
@@ -1191,22 +857,26 @@ Transfinite Surface {
 
 // end edges defining the fore and aft bl meshes,
 Transfinite Curve {
-    bl_fore_aft_edges[]
+    bl_fore_edges[],
+    bl_aft_edges[]
 } = 25 Using Bump 0.35;
 //} = 25;
 
 Transfinite Surface {
-    bl_fore_aft_surfaces[]
+    bl_fore_surfaces[],
+    bl_aft_surfaces[]
 };
 
 // end edges defining the top and bottom bl meshes,
 Transfinite Curve {
-    bl_top_bottom_edges[]
+    bl_bottom_edges[],
+    bl_top_edges[]
 } = 35 Using Bump 0.35;
 //} = 35;
 
 Transfinite Surface {
-    bl_top_bottom_surfaces[]
+    bl_bottom_surfaces[],
+    bl_top_surfaces[]
 };
 
 // end edges defining the top and bottom bl meshes,

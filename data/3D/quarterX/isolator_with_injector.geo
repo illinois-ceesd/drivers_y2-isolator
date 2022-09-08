@@ -18,58 +18,11 @@ Else
     boundratiocavity=2.0;
 EndIf
 
-If(Exists(blratioinjector))
-    boundratioinjector=blratioinjector;
-Else
-    boundratioinjector=2.0;
-EndIf
-
-If(Exists(injectorfac))
-    injector_factor=injectorfac;
-Else
-    injector_factor=10.0;
-EndIf
-
-If(Exists(shearfac))
-    shear_factor=shearfac;
-Else
-    shear_factor=1.0;
-EndIf
-
-If(Exists(isofac))
-    iso_factor=isofac;
-Else
-    iso_factor=1.0;
-EndIf
-
-If(Exists(cavityfac))
-    cavity_factor=cavityfac;
-Else
-    cavity_factor=1.0;
-EndIf
-
 bigsize = basesize*4;     // the biggest mesh size 
 inletsize = basesize*2;   // background mesh size upstream of the nozzle
-isosize = basesize/iso_factor;       // background mesh size in the isolator
-nozzlesize = basesize/12;       // background mesh size in the nozzle
-cavitysize = basesize/cavity_factor; // background mesh size in the cavity region
-shearsize = isosize/shear_factor;
-
-inj_h=4.e-3;  // height of injector (bottom) from floor
-inj_t=1.59e-3; // diameter of injector
-inj_d = 20e-3; // length of injector
-injectorsize = inj_t/injector_factor; // background mesh size in the cavity region
-
-Printf("basesize = %f", basesize);
-Printf("inletsize = %f", inletsize);
-Printf("isosize = %f", isosize);
-Printf("nozzlesize = %f", nozzlesize);
-Printf("cavitysize = %f", cavitysize);
-Printf("shearsize = %f", shearsize);
-Printf("injectorsize = %f", injectorsize);
-Printf("boundratio = %f", boundratio);
-Printf("boundratiocavity = %f", boundratiocavity);
-Printf("boundratioinjector = %f", boundratioinjector);
+isosize = basesize;       // background mesh size in the isolator
+nozzlesize = basesize/2;       // background mesh size in the isolator
+cavitysize = basesize/2.; // background mesh size in the cavity region
 
 //Top Wall Back
 Point(1) = {0.21, 0.0270645, 0.0, basesize};
@@ -575,100 +528,63 @@ surface_vector[] = Extrude {0, 0, 0.035} { Surface{1}; };
 //surface_vector[12], // nozzle bottom
 //1                   // back surface (original)
 //
-//bottom right cavity corner {0.70163,-0.0283245,0.0}
-//Cylinder { x0, y0, z0, xn, yn, zn, r }
-Cylinder(100) = {0.70163, -0.0283245 + inj_h + inj_t/2., 0.035/2., inj_d, 0.0, 0.0, inj_t/2.0 };
-injector_surface_vector[] = Boundary{Volume{100};};
-// form union with isolator volume
-union[] = BooleanUnion { Volume{surface_vector[1]}; Delete; }{Volume{100}; Delete; };
-// Abs removes the directionality of the surface, so we can use in mesh generation (spacing)
-surface_vector_full[] = Abs(Boundary{Volume{union[0]};});
 //
-//Printf("union length = %g", #union[]);
-//Printf("surface length = %g", #surface_vector[]);
-//For i In {0:#surface_vector[]-1}
-    //Printf("surface_vector: %g",surface_vector[i]);
-//EndFor
-//Printf("surface length = %g", #injector_surface_vector[]);
-//For i In {0:#injector_surface_vector[]-1}
-    //Printf("injector_surface_vector: %g",injector_surface_vector[i]);
-//EndFor
-//For i In {0:#surface_vector_full[]-1}
-    //Printf("surface_vector_full: %g",surface_vector_full[i]);
-//EndFor
+// bottom right cavity corner
+//Point(452) = {0.70163,-0.0283245,0.0,basesize};
+inj_h=4.e-3;  // height of injector (bottom) from floor
+inj_t=1.59e-3; // diameter of injector
+inj_d = 20e-3; // length of injector
+//Cylinder { x0, y0, z0, xn, yn, zn, r }
+Cylinder(100) = {0.70163, -0.0283245 + inj_h, 0.035/2., inj_d, 0.0, 0.0, inj_t/2.0 };
+// form union with isolator volume
+union[] = BooleanUnior { Volume{surface_vector[1]}; Delete; }{Volume{100}; Delete; };
 
-//surface_vector_full[1], // nozzle top
-//surface_vector_full[2], // nozzle bottom
-//surface_vector_full[3], // isolator back (aft)
-//surface_vector_full[4], // isolator front (fore)
-//surface_vector_full[5], // isolator top
-//surface_vector_full[6], // isolator bottom
-//surface_vector_full[7], // cavity front
-//surface_vector_full[8], // cavity bottom
-//surface_vector_full[9], // cavity slant
-//surface_vector_full[10], // post cavity flat
-//surface_vector_full[11], // expansion bottom
-//surface_vector_full[12], // outlet
-//surface_vector_full[13], // injector wall
-//surface_vector_full[14], // injector inlet
-
-//Physical Volume("fluid_domain") = surface_vector[1];
-Physical Volume("fluid_domain") = union[0];
-Physical Surface("inflow") = 1; // inlet
-Physical Surface("outflow") = surface_vector_full[12]; // outlet
-Physical Surface("injection") = surface_vector_full[14]; // injection
-Physical Surface("flow") = {
-    1,
-    surface_vector_full[12],
-    surface_vector_full[14]
-};
+Physical Volume("fluid_domain") = surface_vector[1];
+Physical Surface("inflow") = surface_vector[11]; // inlet
+Physical Surface("outflow") = surface_vector[8]; // outlet
 Physical Surface('wall') = {
-surface_vector_full[1], // nozzle top
-surface_vector_full[2], // nozzle bottom
-surface_vector_full[3], // isolator back (aft)
-surface_vector_full[4], // isolator front (fore)
-surface_vector_full[5], // isolator top
-surface_vector_full[6], // isolator bottom
-surface_vector_full[7], // cavity front
-surface_vector_full[8], // cavity bottom
-surface_vector_full[9], // cavity slant
-surface_vector_full[10], // post cavity flat
-surface_vector_full[11] // expansion bottom
-};
-Physical Surface('injector_wall') = {
-surface_vector_full[13] // injector wall
+surface_vector[0],
+surface_vector[2],
+surface_vector[3],
+surface_vector[4],
+surface_vector[5],
+surface_vector[6],
+surface_vector[7],
+surface_vector[9],
+surface_vector[10],
+surface_vector[12],
+1
 };
 
-// Create distance field from surfaces for wall meshing, excludes cavity, injector
+// Create distance field from surfaces for wall meshing, excludes cavity
 Field[1] = Distance;
 Field[1].SurfacesList = {
-surface_vector_full[1], // nozzle top
-surface_vector_full[2], // nozzle bottom
-surface_vector_full[3], // isolator back (aft)
-surface_vector_full[4], // isolator front (fore)
-surface_vector_full[5], // isolator top
-surface_vector_full[6], // isolator bottom
-surface_vector_full[10], // post cavity flat
-surface_vector_full[11] // expansion bottom
+surface_vector[0],
+surface_vector[2], // isolator bottom
+surface_vector[6], // post-cavity flat
+surface_vector[7], // expansion bottom
+surface_vector[9], // isolator top
+surface_vector[10], // nozzle top
+surface_vector[12], // nozzle bottom
+1
 };
 Field[1].Sampling = 1000;
 //
 //Create threshold field that varrries element size near boundaries
 Field[2] = Threshold;
 Field[2].InField = 1;
-Field[2].SizeMin = isosize / boundratio;
+Field[2].SizeMin = nozzlesize / boundratio;
 Field[2].SizeMax = isosize;
 Field[2].DistMin = 0.00002;
-//Field[2].DistMax = 0.005;
-Field[2].DistMax = 0.01;
+Field[2].DistMax = 0.005;
 Field[2].StopAtDistMax = 1;
 
 // Create distance field from curves, cavity only
 Field[11] = Distance;
 Field[11].SurfacesList = {
-surface_vector_full[7], // cavity front
-surface_vector_full[8], // cavity bottom
-surface_vector_full[9] // cavity slant
+surface_vector[3], // cavity rear (slant)
+surface_vector[4], // cavity bottom
+surface_vector[5] // cavity front
 };
 Field[11].Sampling = 1000;
 
@@ -678,25 +594,8 @@ Field[12].InField = 11;
 Field[12].SizeMin = cavitysize / boundratiocavity;
 Field[12].SizeMax = cavitysize;
 Field[12].DistMin = 0.00002;
-Field[12].DistMax = 0.01;
+Field[12].DistMax = 0.005;
 Field[12].StopAtDistMax = 1;
-
-// Create distance field from curves, injector only
-Field[13] = Distance;
-Field[13].SurfacesList = {
-surface_vector_full[13] // injector wall
-};
-Field[13].Sampling = 1000;
-
-//Create threshold field that varrries element size near boundaries
-Field[14] = Threshold;
-Field[14].InField = 13;
-Field[14].SizeMin = injectorsize / boundratioinjector;
-Field[14].SizeMax = injectorsize;
-Field[14].DistMin = 0.000001;
-//Field[14].DistMax = 0.0005;
-Field[14].DistMax = 0.001;
-Field[14].StopAtDistMax = 1;
 
 nozzle_start = 0.27;
 nozzle_end = 0.30;
@@ -741,71 +640,19 @@ Field[6] = Box;
 Field[6].XMin = cavity_start;
 Field[6].XMax = cavity_end;
 Field[6].YMin = -1.0;
-//Field[6].YMax = -0.003;
-Field[6].YMax = 0.0;
+Field[6].YMax = -0.003;
 Field[6].ZMin = -1.0;
 Field[6].ZMax = 1.0;
 Field[6].Thickness = 0.10;    // interpolate from VIn to Vout over a distance around the box
 Field[6].VIn = cavitysize;
 Field[6].VOut = bigsize;
 
-// background mesh size in the injection region
-injector_start_x = 0.69;
-injector_end_x = 0.75;
-//injector_start_y = -0.0225;
-injector_start_y = -0.021;
-injector_end_y = -0.026;
-injector_start_z = 0.0175 - 0.002;
-injector_end_z = 0.0175 + 0.002;
-Field[7] = Box;
-Field[7].XMin = injector_start_x;
-Field[7].XMax = injector_end_x;
-Field[7].YMin = injector_start_y;
-Field[7].YMax = injector_end_y;
-Field[7].ZMin = injector_start_z;
-Field[7].ZMax = injector_end_z;
-Field[7].Thickness = 0.10;    // interpolate from VIn to Vout over a distance around the cylinder
-//Field[7] = Cylinder;
-//Field[7].XAxis = 1;
-//Field[7].YCenter = -0.0225295;
-//Field[7].ZCenter = 0.0157;
-//Field[7].Radius = 0.003;
-Field[7].VIn = injectorsize;
-Field[7].VOut = bigsize;
-
-// background mesh size in the shear region
-shear_start_x = 0.65;
-shear_end_x = 0.75;
-shear_start_y = -0.004;
-shear_end_y = -0.01;
-shear_start_z = -1.0;
-shear_end_z = 1.0;
-Field[8] = Box;
-Field[8].XMin = shear_start_x;
-Field[8].XMax = shear_end_x;
-Field[8].YMin = shear_start_y;
-Field[8].YMax = shear_end_y;
-Field[8].ZMin = shear_start_z;
-Field[8].ZMax = shear_end_z;
-Field[8].Thickness = 0.10;  
-Field[8].VIn = shearsize;
-Field[8].VOut = bigsize;
-
 // take the minimum of all defined meshing fields
 Field[100] = Min;
-Field[100].FieldsList = {2, 3, 4, 5, 6, 7, 8, 12, 14};
+Field[100].FieldsList = {2, 3, 4, 5, 6, 12};
+//Field[100].FieldsList = {2};
 Background Field = 100;
 
 Mesh.MeshSizeExtendFromBoundary = 0;
 Mesh.MeshSizeFromPoints = 0;
 Mesh.MeshSizeFromCurvature = 0;
-
-// Delaunay, seems to respect changing mesh sizes better
-// Mesh.Algorithm3D = 1; 
-// Frontal, makes a better looking mesh, will make bigger elements where I don't want them though
-// Doesn't repsect the mesh sizing parameters ...
-//Mesh.Algorithm3D = 4; 
-// HXT, re-implemented Delaunay in parallel
-Mesh.Algorithm3D = 10; 
-Mesh.OptimizeNetgen = 1;
-Mesh.Smoothing = 100;
