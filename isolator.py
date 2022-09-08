@@ -39,8 +39,8 @@ import math
 from pytools.obj_array import make_obj_array
 from functools import partial
 
+from mirgecom.discretization import create_discretization_collection
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.op import nodal_max, nodal_min
@@ -1091,20 +1091,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if rank == 0:
         logger.info("Making discretization")
 
-    from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
-    from meshmode.discretization.poly_element import \
-          default_simplex_group_factory, QuadratureSimplexGroupFactory
+    dcoll = create_discretization_collection(
+        actx, local_mesh, order=order, mpi_communicator=comm)
 
-    dcoll = EagerDGDiscretization(
-        actx, local_mesh,
-        discr_tag_to_group_factory={
-            DISCR_TAG_BASE: default_simplex_group_factory(
-                base_dim=local_mesh.dim, order=order),
-            DISCR_TAG_QUAD: QuadratureSimplexGroupFactory(2*order + 1)
-        },
-        mpi_communicator=comm
-    )
-
+    from grudge.dof_desc import DISCR_TAG_QUAD
     if use_overintegration:
         quadrature_tag = DISCR_TAG_QUAD
     else:
@@ -1156,11 +1146,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             logger.info("Restarting soln.")
         current_cv = restart_data["cv"]
         if restart_order != order:
-            restart_dcoll = EagerDGDiscretization(
-                actx,
-                local_mesh,
-                order=restart_order,
-                mpi_communicator=comm)
+            restart_dcoll = create_discretization_collection(
+                actx, local_mesh, order=restart_order, mpi_communicator=comm)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,

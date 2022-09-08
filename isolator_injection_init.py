@@ -38,8 +38,8 @@ import pyopencl.array as cla  # noqa
 import math
 from functools import partial
 
+from mirgecom.discretization import create_discretization_collection
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
 from mirgecom.simutil import (
@@ -1097,7 +1097,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     if rank == 0:
         logging.info("Making discretization")
 
-    dcoll = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
+    dcoll = create_discretization_collection(
+        actx, local_mesh, order=order, mpi_communicator=comm)
 
     if rank == 0:
         logging.info("Done making discretization")
