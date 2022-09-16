@@ -965,7 +965,7 @@ def main(ctx_factory=cl.create_some_context,
 
     sponge_init = InitSponge(x0=sponge_x0, thickness=sponge_thickness,
                              amplitude=sponge_amp)
-    x_vec = actx.thaw(dcoll.nodes(), actx)
+    x_vec = actx.thaw(dcoll.nodes())
 
     def _sponge_sigma(x_vec):
         return sponge_init(x_vec=x_vec)

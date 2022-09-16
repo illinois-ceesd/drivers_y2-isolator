@@ -1,16 +1,10 @@
 SetFactory("OpenCASCADE");
 //Geometry.CopyMeshingMethod = 1;
 
-If(Exists(scale))
-    scale_fac = scale;
+If(Exists(size))
+    basesize=size;
 Else
-    scale_fac = 1.0;
-EndIf
-
-If(Exists(scale_bl))
-    scale_fac_bl = scale_bl;
-Else
-    scale_fac_bl = 1.0;
+    basesize=0.0064;
 EndIf
 
 If(Exists(blratio))
@@ -55,14 +49,10 @@ Else
     cavity_factor=4.0;
 EndIf
 
-basesize=0.0064;
-basesize = basesize/scale_fac;
-
 bigsize = basesize*4;     // the biggest mesh size 
 inletsize = basesize*2;   // background mesh size upstream of the nozzle
 isosize = basesize/iso_factor;       // background mesh size in the isolator
-//nozzlesize = basesize/12;       // background mesh size in the nozzle
-nozzlesize = basesize/6;       // background mesh size in the nozzle
+nozzlesize = basesize/12;       // background mesh size in the nozzle
 cavitysize = basesize/cavity_factor; // background mesh size in the cavity region
 shearsize = isosize/shear_factor;
 
@@ -81,7 +71,6 @@ Printf("injectorsize = %f", injectorsize);
 Printf("boundratio = %f", boundratio);
 Printf("boundratiocavity = %f", boundratiocavity);
 Printf("boundratioinjector = %f", boundratioinjector);
-Printf("scale_fac = %f", scale_fac);
 
 p = 1;
 l = 1;
@@ -653,6 +642,230 @@ Curve Loop(600) = {
 }; 
 Plane Surface(600) = {600}; // the back wall interior
 
+/////////////////////
+// cavity geometry
+/////////////////////
+
+x_combustor_start = x_cavity_ru + 0.02;
+// cavity coordinates
+p_cavity_front_lower = p++;
+p_cavity_rear_lower = p++;
+p_cavity_rear_upper = p++;
+p_expansion_start_bottom = p++;
+p_expansion_start_top = p++;
+Point(p_cavity_front_lower) = {x_cavity_start,y_cavity_l,0.0,basesize};
+Point(p_cavity_rear_lower) = {x_cavity_rl,y_cavity_l,0.0,basesize};
+Point(p_cavity_rear_upper) = {x_cavity_ru,y_isolator_bottom,0.0,basesize};
+Point(p_expansion_start_bottom) = {x_combustor_start,y_isolator_bottom,0.0,basesize};
+Point(p_expansion_start_top) = {x_combustor_start,y_isolator_top,0.0,basesize};
+
+// boundary layer points
+p_cavity_inner_bl = p++;
+p_cavity_front_upper_bl = p++;
+p_cavity_front_lower_bl = p++;
+p_cavity_front_lower_wall_bl = p++;
+p_cavity_front_bottom_wall_bl = p++;
+p_cavity_rear_lower_wall_bl = p++;
+p_cavity_rear_bottom_wall_bl = p++;
+p_cavity_rear_bottom_bl = p++;
+p_cavity_rear_upper_bl = p++;
+p_cavity_expansion_start_bottom = p++;
+p_cavity_expansion_start_bottom_bl = p++;
+p_cavity_expansion_start_top_bl = p++;
+p_cavity_expansion_start_top = p++;
+Point(p_cavity_inner_bl) = {x_cavity_start+bl_thickness,y_isolator_bottom+bl_thickness,0.0,basesize};
+Point(p_cavity_front_upper_bl) = {x_cavity_start+bl_thickness,y_isolator_bottom,0.0,basesize};
+Point(p_cavity_front_lower_bl) = {x_cavity_start+bl_thickness,y_cavity_l+bl_thickness,0.0,basesize};
+Point(p_cavity_front_lower_wall_bl) = {x_cavity_start,y_cavity_l+bl_thickness,0.0,basesize};
+Point(p_cavity_front_bottom_wall_bl) = {x_cavity_start+bl_thickness,y_cavity_l,0.0,basesize};
+bl_thickness_diag = bl_thickness/Sqrt(2.);
+Point(p_cavity_rear_bottom_bl) = {x_cavity_rl-bl_thickness_diag,y_cavity_l+bl_thickness,0.0,basesize};
+Point(p_cavity_rear_upper_bl) = {x_cavity_ru-bl_thickness_diag,y_isolator_bottom+bl_thickness,0.0,basesize};
+Point(p_cavity_expansion_start_bottom) = {x_cavity_ru+0.02,y_isolator_bottom,0.0,basesize};
+Point(p_cavity_expansion_start_bottom_bl) = {x_cavity_ru+0.02,y_isolator_bottom+bl_thickness,0.0,basesize};
+Point(p_cavity_expansion_start_top_bl) = {x_cavity_ru+0.02,y_isolator_top-bl_thickness,0.0,basesize};
+Point(p_cavity_expansion_start_top) = {x_cavity_ru+0.02,y_isolator_top,0.0,basesize};
+
+// cavity lines
+l_cavity_front = l++;
+l_cavity_bottom = l++;
+l_cavity_rear = l++;
+l_cavity_flat = l++;
+l_cavity_end = l++;
+l_cavity_end_bl_top = l++;
+l_cavity_end_bl_bottom = l++;
+l_cavity_top = l++;
+
+
+Line(l_cavity_front) = {p_cavity_front_lower_wall_bl, p_cavity_front_upper};
+Line(l_cavity_bottom) = {p_cavity_front_bottom_wall_bl, p_cavity_rear_lower};
+Line(l_cavity_rear) = {p_cavity_rear_lower, p_cavity_rear_upper};
+Line(l_cavity_flat) = {p_cavity_rear_upper, p_cavity_expansion_start_bottom};
+Line(l_cavity_end_bl_bottom) = {p_cavity_expansion_start_bottom, p_cavity_expansion_start_bottom_bl};
+Line(l_cavity_end) = {p_cavity_expansion_start_bottom_bl,p_cavity_expansion_start_top_bl};
+Line(l_cavity_end_bl_top) = {p_cavity_expansion_start_top_bl,p_cavity_expansion_start_top};
+Line(l_cavity_top) = {p_cavity_front_top,p_cavity_expansion_start_top};
+
+// boundary layer lines
+l_cavity_bl_top = l++;
+Line(l_cavity_bl_top) = { p_cavity_front_bl_top, p_cavity_expansion_start_top_bl};
+l_cavity_flat_bl = l++;
+Line(l_cavity_flat_bl) = {p_cavity_rear_upper_bl, p_cavity_expansion_start_bottom_bl};
+l_cavity_rear_bl = l++;
+Line(l_cavity_rear_bl) = {p_cavity_rear_bottom_bl, p_cavity_rear_upper_bl};
+l_cavity_bottom_bl = l++;
+Line(l_cavity_bottom_bl) = {p_cavity_front_lower_bl, p_cavity_rear_bottom_bl};
+l_cavity_front_bl = l++;
+Line(l_cavity_front_bl) = {p_cavity_front_lower_bl, p_cavity_front_upper_bl};
+l_cavity_inner_bl_top = l++;
+Line(l_cavity_inner_bl_top) = {p_cavity_front_bl_bottom, p_cavity_inner_bl};
+l_cavity_inner_bl_right = l++;
+Line(l_cavity_inner_bl_right) = {p_cavity_front_upper_bl, p_cavity_inner_bl};
+l_cavity_inner_bl_bottom = l++;
+Line(l_cavity_inner_bl_bottom) = {p_cavity_front_upper, p_cavity_front_upper_bl};
+l_cavity_corner_bl_top = l++;
+Line(l_cavity_corner_bl_top) = {p_cavity_front_lower_wall_bl, p_cavity_front_lower_bl};
+l_cavity_corner_bl_bottom = l++;
+Line(l_cavity_corner_bl_bottom) = {p_cavity_front_lower, p_cavity_front_bottom_wall_bl};
+l_cavity_corner_bl_left = l++;
+Line(l_cavity_corner_bl_left) = {p_cavity_front_lower, p_cavity_front_lower_wall_bl};
+l_cavity_corner_bl_right = l++;
+Line(l_cavity_corner_bl_right) = {p_cavity_front_bottom_wall_bl, p_cavity_front_lower_bl};
+l_cavity_rear_corner_bl = l++;
+Line(l_cavity_rear_corner_bl) = {p_cavity_rear_lower, p_cavity_rear_bottom_bl};
+l_cavity_rear_upper_bl = l++;
+Line(l_cavity_rear_upper_bl) = {p_cavity_rear_upper, p_cavity_rear_upper_bl};
+
+
+//Create cavity surfaces
+Curve Loop(1000) = { 
+    l_isolator_bl_top_end,
+    l_cavity_top,
+    -l_cavity_end_bl_top,
+    -l_cavity_bl_top
+}; 
+Plane Surface(1000) = {1000}; // cavity top bl
+
+Curve Loop(1100) = { 
+    l_cavity_bl_top,
+    -l_cavity_end,
+    -l_cavity_flat_bl,
+    -l_cavity_rear_bl,
+    -l_cavity_bottom_bl,
+    l_cavity_front_bl,
+    l_cavity_inner_bl_right,
+    -l_cavity_inner_bl_top,
+    l_isolator_end
+}; 
+Plane Surface(1100) = {1100}; // cavity interior
+
+Curve Loop(1200) = {
+    l_cavity_front,
+    l_cavity_inner_bl_bottom,
+    -l_cavity_front_bl,
+    -l_cavity_corner_bl_top
+}; 
+Plane Surface(1200) = {1200}; // cavity front bl
+
+Curve Loop(1300) = {
+    -l_cavity_bottom,
+    -l_cavity_corner_bl_right,
+    l_cavity_bottom_bl,
+    -l_cavity_rear_corner_bl
+}; 
+Plane Surface(1300) = {1300}; // cavity bottom bl
+
+Curve Loop(1400) = {
+    l_cavity_rear_corner_bl,
+    l_cavity_rear_bl,
+    -l_cavity_rear_upper_bl,
+    -l_cavity_rear
+}; 
+Plane Surface(1400) = {1400}; // cavity slant wall bl
+
+Curve Loop(1500) = {
+    l_cavity_rear_upper_bl,
+    l_cavity_flat_bl,
+    -l_cavity_end_bl_bottom,
+    -l_cavity_flat
+}; 
+Plane Surface(1500) = {1500}; // cavity flat wall bl
+
+Curve Loop(1600) = {
+    l_isolator_bl_bottom_end,
+    l_cavity_inner_bl_top,
+    -l_cavity_inner_bl_right,
+    -l_cavity_inner_bl_bottom
+}; 
+Plane Surface(1600) = {1600}; // cavity inner corner bl
+
+Curve Loop(1700) = {
+    l_cavity_corner_bl_left,
+    l_cavity_corner_bl_top,
+    -l_cavity_corner_bl_right,
+    -l_cavity_corner_bl_bottom
+}; 
+Plane Surface(1700) = {1700}; // cavity front corner bl
+
+/////////////////////
+// combustor geometry
+/////////////////////
+
+p=1000;
+p_outlet_bottom = p++;
+p_outlet_bottom_bl = p++;
+p_outlet_top_bl = p++;
+p_outlet_top = p++;
+x_end = 0.65163+0.335;
+y_end_bottom = y_isolator_bottom-(0.265-0.02)*Sin(2*Pi/180);
+Point(p_outlet_bottom) = {x_end,y_end_bottom,0.0,basesize};
+Point(p_outlet_bottom_bl) = {x_end,y_end_bottom+bl_thickness,0.0,basesize};
+Point(p_outlet_top_bl) = {x_end,y_isolator_top-bl_thickness,0.0,basesize};
+Point(p_outlet_top) = {x_end,y_isolator_top,0.0,basesize};
+
+l_combustor_bottom = l++;
+l_combustor_top = l++;
+l_combustor_bl_bottom = l++;
+l_combustor_bl_top = l++;
+l_combustor_bl_bottom_end = l++;
+l_combustor_bl_top_end = l++;
+l_combustor_end = l++;
+l_combustor_interior_bottom = l++;
+Line(l_combustor_bottom) = {p_cavity_expansion_start_bottom,p_outlet_bottom};
+Line(l_combustor_top) = {p_cavity_expansion_start_top,p_outlet_top};
+Line(l_combustor_bl_bottom) = {p_cavity_expansion_start_bottom_bl,p_outlet_bottom_bl};
+Line(l_combustor_bl_top) = {p_cavity_expansion_start_top_bl,p_outlet_top_bl};
+Line(l_combustor_bl_bottom_end) = {p_outlet_bottom,p_outlet_bottom_bl};
+Line(l_combustor_end) = {p_outlet_bottom_bl,p_outlet_top_bl};
+Line(l_combustor_bl_top_end) = {p_outlet_top_bl, p_outlet_top};
+
+//Create lineloop of this geometry
+// start on the bottom left and go around clockwise
+Curve Loop(2000) = { 
+    l_cavity_end_bl_top,
+    l_combustor_top,
+    -l_combustor_bl_top_end,
+    -l_combustor_bl_top
+}; 
+Plane Surface(2000) = {2000}; // the back wall top bl
+
+Curve Loop(2100) = { 
+    l_cavity_end_bl_bottom,
+    l_combustor_bl_bottom,
+    -l_combustor_bl_bottom_end,
+    -l_combustor_bottom
+}; 
+Plane Surface(2100) = {2100}; // the back wall bottom bl
+
+Curve Loop(2200) = { 
+    l_cavity_end,
+    l_combustor_bl_top,
+    l_combustor_end,
+    l_combustor_bl_bottom
+}; 
+Plane Surface(2200) = {2200}; // the back wall interior
+
+
 
 /////////////////////////////////////////////
 // Extrude the back surfaces into volumes,
@@ -664,9 +877,6 @@ Plane Surface(600) = {600}; // the back wall interior
 // [1] - extruded volume
 // [n+1] - surfaces (belonging to nth line in "Curve Loop (1)") */
 // aft bl
-/////////////////////
-// nozzle geometry
-/////////////////////
 noz_surf_vec_top_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{100}; };
 noz_surf_vec_bottom_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{200}; };
 noz_surf_vec_interior_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{300}; };
@@ -681,10 +891,6 @@ noz_surf_vec_top_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{noz_surf_
 noz_surf_vec_bottom_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{noz_surf_vec_interior_bottom_bl[0]};};
 noz_surf_vec_interior_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{noz_surf_vec_interior[0]};};
 //
-
-/////////////////////
-// isolator geometry
-/////////////////////
 
 // isolator aft bl
 iso_surf_vec_top_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{400}; };
@@ -701,84 +907,94 @@ iso_surf_vec_top_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{iso_surf_
 iso_surf_vec_bottom_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{iso_surf_vec_interior_bottom_bl[0]};};
 iso_surf_vec_interior_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{iso_surf_vec_interior[0]};};
 
+// cavity aft bl
+cav_surf_vec_top_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1000}; };
+cav_surf_vec_interior_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1100}; };
+cav_surf_vec_front_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1200}; };
+cav_surf_vec_bottom_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1300}; };
+cav_surf_vec_wall_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1400}; };
+cav_surf_vec_flat_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1500}; };
+cav_surf_vec_inner_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1600}; };
+cav_surf_vec_corner_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{1700}; };
+
+// cavity fore-aft interior
+cav_surf_vec_interior_top_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_top_bl_aft_bl[0]};};
+cav_surf_vec_interior_interior[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_interior_aft_bl[0]};};
+cav_surf_vec_interior_front_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_front_bl_aft_bl[0]};};
+cav_surf_vec_interior_bottom_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_bottom_bl_aft_bl[0]};};
+cav_surf_vec_interior_wall_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_wall_bl_aft_bl[0]};};
+cav_surf_vec_interior_flat_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_flat_bl_aft_bl[0]};};
+cav_surf_vec_interior_inner_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_inner_bl_aft_bl[0]};};
+cav_surf_vec_interior_corner_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{cav_surf_vec_corner_bl_aft_bl[0]};};
+
+// cavity fore bl
+cav_surf_vec_top_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_top_bl[0]};};
+cav_surf_vec_interior_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_interior[0]};};
+cav_surf_vec_front_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_front_bl[0]};};
+cav_surf_vec_bottom_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_bottom_bl[0]};};
+cav_surf_vec_wall_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_wall_bl[0]};};
+cav_surf_vec_flat_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_flat_bl[0]};};
+cav_surf_vec_inner_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_inner_bl[0]};};
+cav_surf_vec_corner_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{cav_surf_vec_interior_corner_bl[0]};};
+
+// combustor aft bl
+comb_surf_vec_top_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{2000}; };
+comb_surf_vec_bottom_bl_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{2100}; };
+comb_surf_vec_interior_aft_bl[] = Extrude {0, 0, bl_thickness} { Surface{2200}; };
+
+// combustor fore-aft interior
+comb_surf_vec_interior_top_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{comb_surf_vec_top_bl_aft_bl[0]};};
+comb_surf_vec_interior_bottom_bl[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{comb_surf_vec_bottom_bl_aft_bl[0]};};
+comb_surf_vec_interior[] = Extrude {0, 0, 0.035 - 2*bl_thickness} { Surface{comb_surf_vec_interior_aft_bl[0]};};
+
+// combustor fore bl
+comb_surf_vec_top_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{comb_surf_vec_interior_top_bl[0]};};
+comb_surf_vec_bottom_bl_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{comb_surf_vec_interior_bottom_bl[0]};};
+comb_surf_vec_interior_fore_bl[] = Extrude {0, 0, bl_thickness} { Surface{comb_surf_vec_interior[0]};};
 
 /////////////////////
-// nozzle modifications
+// injector geometry
 /////////////////////
-nozzle_start = 0.27;
-nozzle_end = 0.30;
-Box(10000) = {nozzle_start, -.1, -.1, nozzle_end-nozzle_start, .2, .2};
 
+// the boundary layer
+// 2 half cylinders put together
+Cylinder(3000) = {0.70163, -0.0283245 + inj_h + inj_t/2., 0.035/2., inj_d, 0.0, 0.0, inj_t/2.0, Pi };
+injector_top[] = Symmetry { 0, -1, 0, -0.0283245 + inj_h + inj_t/2.} {Duplicata{Volume{3000};}};
+// remove the cavity from the injector volume
+injector[] = BooleanDifference {
+    Volume{3000}; Delete;} {
+    Volume{cav_surf_vec_interior_interior[1]};};
+injector[] = BooleanDifference {
+    Volume{injector_top[]}; Delete;} {
+    Volume{cav_surf_vec_interior_interior[1]};};
+// remove the cavity wall bl from the injector volume
+injector[] = BooleanDifference {
+    Volume{3000}; Delete;} {
+    Volume{cav_surf_vec_interior_wall_bl[1]};};
+injector[] = BooleanDifference {
+    Volume{injector_top[]}; Delete;} {
+    Volume{cav_surf_vec_interior_wall_bl[1]};};
 
-nozzle_throat[] = BooleanIntersection { 
-    Volume{
-        noz_surf_vec_interior_top_bl[1],
-        noz_surf_vec_interior_bottom_bl[1],
-        noz_surf_vec_interior[1],
-        noz_surf_vec_top_bl_aft_bl[1],
-        noz_surf_vec_bottom_bl_aft_bl[1],
-        noz_surf_vec_interior_aft_bl[1],
-        noz_surf_vec_top_bl_fore_bl[1],
-        noz_surf_vec_bottom_bl_fore_bl[1],
-        noz_surf_vec_interior_fore_bl[1]
-    }; } {
-    Volume{10000}; };
+// the core flow
+Cylinder(3100) = {0.70163, -0.0283245 + inj_h + inj_t/2., 0.035/2., inj_d, 0.0, 0.0, inj_t/2.0-bl_thickness_inj };
+// remove the cavity from the injector volume
+injector_inner[] = BooleanDifference {
+    Volume{3100}; Delete;} {
+    Volume{cav_surf_vec_interior_interior[1]};};
+// remove the cavity wall bl from the injector volume
+injector_inner[] = BooleanDifference {
+    Volume{3100}; Delete;} {
+    Volume{cav_surf_vec_interior_wall_bl[1]};};
 
-// consistency for naming
-noz_throat_surf_vec_interior_top_bl = nozzle_throat[0];
-noz_throat_surf_vec_interior_bottom_bl = nozzle_throat[1];
-noz_throat_surf_vec_interior = nozzle_throat[2];
-noz_throat_surf_vec_top_bl_aft_bl = nozzle_throat[3];
-noz_throat_surf_vec_bottom_bl_aft_bl = nozzle_throat[4];
-noz_throat_surf_vec_interior_aft_bl = nozzle_throat[5];
-noz_throat_surf_vec_top_bl_fore_bl = nozzle_throat[6];
-noz_throat_surf_vec_bottom_bl_fore_bl = nozzle_throat[7];
-noz_throat_surf_vec_interior_fore_bl = nozzle_throat[8];
+// subtract the boundary layer volume
+injector_bl1[] = BooleanDifference {
+    Volume{3000}; Delete; } {
+    Volume{3100}; };
+// subtract the boundary layer volume
+injector_bl2[] = BooleanDifference {
+    Volume{injector[]}; Delete; } {
+    Volume{3100}; };
 
-//Printf("nozzle_throat length = %g", #nozzle_throat[]);
-//For i In {0:#nozzle_throat[]-1}
-    //Printf("nozzle_throat: %g",nozzle_throat[i]);
-//EndFor
-
-nozzle_split[] = BooleanDifference { 
-    Volume{
-        noz_surf_vec_interior_top_bl[1],
-        noz_surf_vec_interior_bottom_bl[1],
-        noz_surf_vec_interior[1],
-        noz_surf_vec_top_bl_aft_bl[1],
-        noz_surf_vec_bottom_bl_aft_bl[1],
-        noz_surf_vec_interior_aft_bl[1],
-        noz_surf_vec_top_bl_fore_bl[1],
-        noz_surf_vec_bottom_bl_fore_bl[1],
-        noz_surf_vec_interior_fore_bl[1]
-    }; Delete; } {
-    Volume{10000}; Delete; };
-
-// consistency for naming
-noz_up_surf_vec_interior_top_bl = nozzle_split[0];
-noz_up_surf_vec_interior_bottom_bl = nozzle_split[2];
-noz_up_surf_vec_interior = nozzle_split[4];
-noz_up_surf_vec_top_bl_aft_bl = nozzle_split[6];
-noz_up_surf_vec_bottom_bl_aft_bl = nozzle_split[8];
-noz_up_surf_vec_interior_aft_bl = nozzle_split[10];
-noz_up_surf_vec_top_bl_fore_bl = nozzle_split[12];
-noz_up_surf_vec_bottom_bl_fore_bl = nozzle_split[14];
-noz_up_surf_vec_interior_fore_bl = nozzle_split[16];
-
-noz_down_surf_vec_interior_top_bl = nozzle_split[1];
-noz_down_surf_vec_interior_bottom_bl = nozzle_split[3];
-noz_down_surf_vec_interior = nozzle_split[5];
-noz_down_surf_vec_top_bl_aft_bl = nozzle_split[7];
-noz_down_surf_vec_bottom_bl_aft_bl = nozzle_split[9];
-noz_down_surf_vec_interior_aft_bl = nozzle_split[11];
-noz_down_surf_vec_top_bl_fore_bl = nozzle_split[13];
-noz_down_surf_vec_bottom_bl_fore_bl = nozzle_split[15];
-noz_down_surf_vec_interior_fore_bl = nozzle_split[17];
-
-//Printf("nozzle_split length = %g", #nozzle_split[]);
-//For i In {0:#nozzle_split[]-1}
-    //Printf("nozzle_split: %g",nozzle_split[i]);
-//EndFor
 
 Coherence; // remove duplicate entities
 
@@ -791,878 +1007,4 @@ Physical Volume("fluid_domain") = {
     fluid_volume[]
 };
 
-///////////////////////////////////////////////
-// edge idenfication for transfinite meshing //
-///////////////////////////////////////////////
-//
-// anywhere below this that uses a hard-coded number is wrong
-// detect the surface/edge numbering through bounding box manipulation
-//
 
-
-// given an array of edges, find their proper orientation
-// according to the array orient based on the orientation of the
-// point coordinates
-// bb is the bounding box for the volume we're querying
-Macro EdgeAndSurfaces
-
-    // x0 end
-    begin_save = bb[box_dir + 0];
-    end_save = bb[box_dir + 3];
-
-    bb[box_dir + 0] = begin_save - box_tol;
-    bb[box_dir + 3] = begin_save + box_tol;
-    surfaces[] = Surface In BoundingBox {bb[]};
-    edges[] = Curve In BoundingBox { bb[] };
-
-    // loop over all edges to determine orientation
-    For j In {0:#edges[]-1}
-        edge_points[] = PointsOf{Line{edges[j]};};
-        p1[]=Point{edge_points[0]};
-        p2[]=Point{edge_points[1]};
-    
-        For k In {0:2}
-            If (Abs(p1[k] - p2[k]) > 1.e-10)
-                If ((p1[k] - p2[k]) > 1.e-10)
-                    edges[j] *= -1*edge_orient[k];
-                Else
-                    edges[j] *= edge_orient[k];
-                EndIf
-            EndIf
-        EndFor
-    EndFor
-
-    bb[box_dir + 0] = end_save - box_tol;
-    bb[box_dir + 3] = end_save + box_tol;
-    surfaces[] += Surface In BoundingBox {bb[]};
-    edges2[] = Curve In BoundingBox { bb[] };
-
-    // loop over all edges to determine orientation
-    For j In {0:#edges2[]-1}
-        edge_points[] = PointsOf{Line{edges2[j]};};
-        p1[]=Point{edge_points[0]};
-        p2[]=Point{edge_points[1]};
-    
-        For k In {0:2}
-            If (Abs(p1[k] - p2[k]) > 1.e-10)
-                If ((p1[k] - p2[k]) > 1.e-10)
-                    edges2[j] *= -1*edge_orient[k];
-                Else
-                    edges2[j] *= edge_orient[k];
-                EndIf
-            EndIf
-        EndFor
-    EndFor
-
-    edges[] += edges2[];
-
-Return
-
-box_dir = 0;
-//
-// find the corner edges and surfaces on each end plane
-// we do the ends of each volume
-// so we only need to do every other volume for the end surfaces/edges
-//
-///////////////////
-// Nozzle Inlet ///
-///////////////////
-Printf("Nozzle Inlet");
-// fore/aft/top/bottom corners
-//  aft-bottom
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_bottom_bl_aft_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] = edges[];
-bl_corner_surfaces[] = surfaces[];
-
-//fore-bottom
-edge_orient[] = {1, 1, -1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_bottom_bl_fore_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// aft-top
-edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_top_bl_aft_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// fore-top
-edge_orient[] = {1, -1, -1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_top_bl_fore_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-    
-//Printf("bl_corner_vert_edges length = %g", #bl_corner_vert_edges[]);
-//For i In {0:#bl_corner_vert_edges[]-1}
-    //Printf("bl_corner_vert_edges: %g",bl_corner_vert_edges[i]);
-//EndFor
-//Printf("bl_corner_surfaces length = %g", #bl_corner_surfaces[]);
-//For i In {0:#bl_corner_surfaces[]-1}
-    //Printf("bl_corner_surfaces: %g",bl_corner_surfaces[i]);
-//EndFor
-
-//  fore/aft/top/bottom side planes/edges
-//  we don't need the orientation information here, so just remove it so we can easily subtract the 
-//  corner edges
-//  bottom
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_interior_bottom_bl};
-bl_bottom_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_bottom_edges[] += Abs(edges[]);
-
-// top
-//edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_interior_top_bl};
-bl_top_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_top_edges[] += Abs(edges[]);
-
-// aft
-//edge_orient[] = {1, 1, -1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_interior_aft_bl};
-bl_aft_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_aft_edges[] += Abs(edges[]);
-
-// fore
-//edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_interior_fore_bl};
-bl_fore_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_fore_edges[] += Abs(edges[]);
-
-//
-// remove the short edges from the fore/aft/top/bottom lists
-//
-bl_fore_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_aft_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_top_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_bottom_edges[] -= Abs(bl_corner_vert_edges[]); 
-
-// 
-// remove any misplaced corner surfaces from the fore/aft/top/bottom lists
-//
-bl_fore_surfaces[] -= bl_corner_surfaces[];
-bl_aft_surfaces[] -= bl_corner_surfaces[];
-bl_top_surfaces[] -= bl_corner_surfaces[];
-bl_bottom_surfaces[] -= bl_corner_surfaces[];
-
-//Printf("bl_aft_edges length = %g", #bl_aft_edges[]);
-//For i In {0:#bl_aft_edges[]-1}
-    //Printf("bl_aft_edges: %g",bl_aft_edges[i]);
-//EndFor
-//Printf("bl_fore_edges length = %g", #bl_fore_edges[]);
-//For i In {0:#bl_fore_edges[]-1}
-    //Printf("bl_fore_edges: %g",bl_fore_edges[i]);
-//EndFor
-//Printf("bl_top_edges length = %g", #bl_top_edges[]);
-//For i In {0:#bl_top_edges[]-1}
-    //Printf("bl_top_edges: %g",bl_top_edges[i]);
-//EndFor
-//Printf("bl_bottom_edges length = %g", #bl_bottom_edges[]);
-//For i In {0:#bl_bottom_edges[]-1}
-    //Printf("bl_bottom_edges: %g",bl_bottom_edges[i]);
-//EndFor
-
-//Printf("bl_aft_surfaces length = %g", #bl_aft_surfaces[]);
-//For i In {0:#bl_aft_surfaces[]-1}
-    //Printf("bl_aft_surfaces: %g",bl_aft_surfaces[i]);
-//EndFor
-//Printf("bl_fore_surfaces length = %g", #bl_fore_surfaces[]);
-//For i In {0:#bl_fore_surfaces[]-1}
-    //Printf("bl_fore_surfaces: %g",bl_fore_surfaces[i]);
-//EndFor
-//Printf("bl_top_surfaces length = %g", #bl_top_surfaces[]);
-//For i In {0:#bl_top_surfaces[]-1}
-    //Printf("bl_top_surfaces: %g",bl_top_surfaces[i]);
-//EndFor
-//Printf("bl_bottom_surfaces length = %g", #bl_bottom_surfaces[]);
-//For i In {0:#bl_bottom_surfaces[]-1}
-    //Printf("bl_bottom_surfaces: %g",bl_bottom_surfaces[i]);
-//EndFor
-
-//
-// long side edges
-// we can construct from the already discovered edges and the existing volumes
-// 
-bl_long_surfaces_nozzle_inlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_up_surf_vec_top_bl_aft_bl} };
-bl_long_surfaces_nozzle_inlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_up_surf_vec_bottom_bl_aft_bl} };
-bl_long_surfaces_nozzle_inlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_up_surf_vec_top_bl_fore_bl} };
-bl_long_surfaces_nozzle_inlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_up_surf_vec_bottom_bl_fore_bl} };
-
-
-////////////////////
-// Nozzle Throat ///
-////////////////////
-Printf("Nozzle Throat");
-// fore/aft/top/bottom corners
-//  aft-bottom
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_throat_surf_vec_bottom_bl_aft_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-//fore-bottom
-edge_orient[] = {1, 1, -1};
-bb[] = BoundingBox Volume{noz_throat_surf_vec_bottom_bl_fore_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// aft-top
-edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{noz_throat_surf_vec_top_bl_aft_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// fore-top
-edge_orient[] = {1, -1, -1};
-bb[] = BoundingBox Volume{noz_throat_surf_vec_top_bl_fore_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-    
-//Printf("bl_corner_vert_edges length = %g", #bl_corner_vert_edges[]);
-//For i In {0:#bl_corner_vert_edges[]-1}
-    //Printf("bl_corner_vert_edges: %g",bl_corner_vert_edges[i]);
-//EndFor
-//Printf("bl_corner_surfaces length = %g", #bl_corner_surfaces[]);
-//For i In {0:#bl_corner_surfaces[]-1}
-    //Printf("bl_corner_surfaces: %g",bl_corner_surfaces[i]);
-//EndFor
-
-
-
-//  fore/aft/top/bottom side planes/edges
-//  we don't need the orientation information here, so just remove it so we can easily subtract the 
-//  corner edges
-//  bottom
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_throat_surf_vec_interior_bottom_bl};
-bl_bottom_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_bottom_edges[] += Abs(edges[]);
-
-// top
-//edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{noz_throat_surf_vec_interior_top_bl};
-bl_top_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_top_edges[] += Abs(edges[]);
-
-// aft
-//edge_orient[] = {1, 1, -1};
-//bb[] = BoundingBox Volume{noz_throat_surf_vec_interior_aft_bl};
-//bl_aft_surfaces[] += Surface In BoundingBox { bb[] };
-//Call EdgeAndSurfaces;
-//bl_aft_edges[] += Abs(edges[]);
-
-// fore
-//edge_orient[] = {1, 1, 1};
-//bb[] = BoundingBox Volume{noz_throat_surf_vec_interior_fore_bl};
-//bl_fore_surfaces[] += Surface In BoundingBox { bb[] };
-//Call EdgeAndSurfaces;
-//bl_fore_edges[] += Abs(edges[]);
-
-//
-// remove the short edges from the fore/aft/top/bottom lists
-//
-bl_fore_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_aft_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_top_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_bottom_edges[] -= Abs(bl_corner_vert_edges[]); 
-
-// 
-// remove any misplaced corner surfaces from the fore/aft/top/bottom lists
-//
-bl_fore_surfaces[] -= bl_corner_surfaces[];
-bl_aft_surfaces[] -= bl_corner_surfaces[];
-bl_top_surfaces[] -= bl_corner_surfaces[];
-bl_bottom_surfaces[] -= bl_corner_surfaces[];
-
-//Printf("bl_aft_edges length = %g", #bl_aft_edges[]);
-//For i In {0:#bl_aft_edges[]-1}
-    //Printf("bl_aft_edges: %g",bl_aft_edges[i]);
-//EndFor
-//Printf("bl_fore_edges length = %g", #bl_fore_edges[]);
-//For i In {0:#bl_fore_edges[]-1}
-    //Printf("bl_fore_edges: %g",bl_fore_edges[i]);
-//EndFor
-//Printf("bl_top_edges length = %g", #bl_top_edges[]);
-//For i In {0:#bl_top_edges[]-1}
-    //Printf("bl_top_edges: %g",bl_top_edges[i]);
-//EndFor
-//Printf("bl_bottom_edges length = %g", #bl_bottom_edges[]);
-//For i In {0:#bl_bottom_edges[]-1}
-    //Printf("bl_bottom_edges: %g",bl_bottom_edges[i]);
-//EndFor
-
-//Printf("bl_aft_surfaces length = %g", #bl_aft_surfaces[]);
-//For i In {0:#bl_aft_surfaces[]-1}
-    //Printf("bl_aft_surfaces: %g",bl_aft_surfaces[i]);
-//EndFor
-//Printf("bl_fore_surfaces length = %g", #bl_fore_surfaces[]);
-//For i In {0:#bl_fore_surfaces[]-1}
-    //Printf("bl_fore_surfaces: %g",bl_fore_surfaces[i]);
-//EndFor
-//Printf("bl_top_surfaces length = %g", #bl_top_surfaces[]);
-//For i In {0:#bl_top_surfaces[]-1}
-    //Printf("bl_top_surfaces: %g",bl_top_surfaces[i]);
-//EndFor
-//Printf("bl_bottom_surfaces length = %g", #bl_bottom_surfaces[]);
-//For i In {0:#bl_bottom_surfaces[]-1}
-    //Printf("bl_bottom_surfaces: %g",bl_bottom_surfaces[i]);
-//EndFor
-
-
-//
-// long side edges
-// we can construct from the already discovered edges and the existing volumes
-// 
-bl_long_surfaces_nozzle_throat[] += Surface In BoundingBox { BoundingBox Volume{ noz_throat_surf_vec_top_bl_aft_bl} };
-bl_long_surfaces_nozzle_throat[] += Surface In BoundingBox { BoundingBox Volume{ noz_throat_surf_vec_bottom_bl_aft_bl} };
-bl_long_surfaces_nozzle_throat[] += Surface In BoundingBox { BoundingBox Volume{ noz_throat_surf_vec_top_bl_fore_bl} };
-bl_long_surfaces_nozzle_throat[] += Surface In BoundingBox { BoundingBox Volume{ noz_throat_surf_vec_bottom_bl_fore_bl} };
-
-////////////////////
-// Nozzle Outlet ///
-////////////////////
-Printf("Nozzle Outlet");
-// fore/aft/top/bottom corners
-//  aft-bottom
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_bottom_bl_aft_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-//fore-bottom
-edge_orient[] = {1, 1, -1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_bottom_bl_fore_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// aft-top
-edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_top_bl_aft_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// fore-top
-edge_orient[] = {1, -1, -1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_top_bl_fore_bl};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-    
-//Printf("bl_corner_vert_edges length = %g", #bl_corner_vert_edges[]);
-//For i In {0:#bl_corner_vert_edges[]-1}
-    //Printf("bl_corner_vert_edges: %g",bl_corner_vert_edges[i]);
-//EndFor
-//Printf("bl_corner_surfaces length = %g", #bl_corner_surfaces[]);
-//For i In {0:#bl_corner_surfaces[]-1}
-    //Printf("bl_corner_surfaces: %g",bl_corner_surfaces[i]);
-//EndFor
-
-
-
-//  fore/aft/top/bottom side planes/edges
-//  we don't need the orientation information here, so just remove it so we can easily subtract the 
-//  corner edges
-//  bottom
-//
-//  making this a little bigger to grab the corner region at the cavity
-//box_tol = 0.01;
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_interior_bottom_bl};
-bl_bottom_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_bottom_edges[] += Abs(edges[]);
-//box_tol = 0.0001;
-
-// top
-//edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_interior_top_bl};
-bl_top_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_top_edges[] += Abs(edges[]);
-
-// aft
-//edge_orient[] = {1, 1, -1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_interior_aft_bl};
-bl_aft_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_aft_edges[] += Abs(edges[]);
-
-// fore
-//edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_down_surf_vec_interior_fore_bl};
-bl_fore_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_fore_edges[] += Abs(edges[]);
-
-//
-// remove the short edges from the fore/aft/top/bottom lists
-//
-bl_fore_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_aft_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_top_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_bottom_edges[] -= Abs(bl_corner_vert_edges[]); 
-
-// 
-// remove any misplaced corner surfaces from the fore/aft/top/bottom lists
-//
-bl_fore_surfaces[] -= bl_corner_surfaces[];
-bl_aft_surfaces[] -= bl_corner_surfaces[];
-bl_top_surfaces[] -= bl_corner_surfaces[];
-bl_bottom_surfaces[] -= bl_corner_surfaces[];
-
-//
-// long side edges
-// we can construct from the already discovered edges and the existing volumes
-// 
-bl_long_surfaces_nozzle_outlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_down_surf_vec_top_bl_aft_bl} };
-bl_long_surfaces_nozzle_outlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_down_surf_vec_bottom_bl_aft_bl} };
-bl_long_surfaces_nozzle_outlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_down_surf_vec_top_bl_fore_bl} };
-bl_long_surfaces_nozzle_outlet[] += Surface In BoundingBox { BoundingBox Volume{ noz_down_surf_vec_bottom_bl_fore_bl} };
-
-
-///////////////
-// Isolator ///
-///////////////
-Printf("Isolator");
-// fore/aft/top/bottom corners
-//  aft-bottom
-//  increase the tol a little to catch the cavity cube corner volumes
-box_tol = 0.002;
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{iso_surf_vec_bottom_bl_aft_bl[1]};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-//fore-bottom
-edge_orient[] = {1, 1, -1};
-bb[] = BoundingBox Volume{iso_surf_vec_bottom_bl_fore_bl[1]};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// aft-top
-edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{iso_surf_vec_top_bl_aft_bl[1]};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-
-// fore-top
-edge_orient[] = {1, -1, -1};
-bb[] = BoundingBox Volume{iso_surf_vec_top_bl_fore_bl[1]};
-Call EdgeAndSurfaces;
-bl_corner_vert_edges[] += edges[];
-bl_corner_surfaces[] += surfaces[];
-box_tol = 0.0001;
-    
-//Printf("bl_corner_vert_edges length = %g", #bl_corner_vert_edges[]);
-//For i In {0:#bl_corner_vert_edges[]-1}
-    //Printf("bl_corner_vert_edges: %g",bl_corner_vert_edges[i]);
-//EndFor
-//Printf("bl_corner_surfaces length = %g", #bl_corner_surfaces[]);
-//For i In {0:#bl_corner_surfaces[]-1}
-    //Printf("bl_corner_surfaces: %g",bl_corner_surfaces[i]);
-//EndFor
-
-
-
-//  fore/aft/top/bottom side planes/edges
-//  we don't need the orientation information here, so just remove it so we can easily subtract the 
-//  corner edges
-//  bottom
-//  increase the tol a little to catch the cavity corner volumes
-box_tol = 0.002;
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{iso_surf_vec_interior_bottom_bl[1]};
-bl_bottom_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_bottom_edges[] += Abs(edges[]);
-
-// top
-//edge_orient[] = {1, -1, 1};
-bb[] = BoundingBox Volume{iso_surf_vec_interior_top_bl[1]};
-bl_top_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_top_edges[] += Abs(edges[]);
-bl_top_surfaces[] += surfaces[];
-
-// aft
-//edge_orient[] = {1, 1, -1};
-bb[] = BoundingBox Volume{iso_surf_vec_interior_aft_bl[1]};
-bl_aft_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_aft_edges[] += Abs(edges[]);
-bl_aft_surfaces[] += surfaces[];
-
-// fore
-//edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{iso_surf_vec_interior_fore_bl[1]};
-bl_fore_surfaces[] += Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-bl_fore_edges[] += Abs(edges[]);
-bl_fore_surfaces[] += surfaces[];
-box_tol = 0.0001;
-
-//
-// remove the short edges from the fore/aft/top/bottom lists
-//
-bl_fore_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_aft_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_top_edges[] -= Abs(bl_corner_vert_edges[]); 
-bl_bottom_edges[] -= Abs(bl_corner_vert_edges[]); 
-
-// 
-// remove any misplaced corner surfaces from the fore/aft/top/bottom lists
-//
-bl_fore_surfaces[] -= bl_corner_surfaces[];
-bl_aft_surfaces[] -= bl_corner_surfaces[];
-bl_top_surfaces[] -= bl_corner_surfaces[];
-bl_bottom_surfaces[] -= bl_corner_surfaces[];
-
-//
-// long side edges
-// we can construct from the already discovered edges and the existing volumes
-// 
-bl_long_surfaces_isolator[] += Surface In BoundingBox { BoundingBox Volume{ iso_surf_vec_top_bl_aft_bl[1]} };
-bl_long_surfaces_isolator[] += Surface In BoundingBox { BoundingBox Volume{ iso_surf_vec_bottom_bl_aft_bl[1]} };
-bl_long_surfaces_isolator[] += Surface In BoundingBox { BoundingBox Volume{ iso_surf_vec_top_bl_fore_bl[1]} };
-bl_long_surfaces_isolator[] += Surface In BoundingBox { BoundingBox Volume{ iso_surf_vec_bottom_bl_fore_bl[1]} };
-
-
-// remove duplicates
-bl_corner_vert_edges[] = Unique(bl_corner_vert_edges[]);
-bl_corner_surfaces[] = Unique(bl_corner_surfaces[]);
-
-bl_aft_edges[] = Unique(bl_aft_edges[]);
-bl_fore_edges[] = Unique(bl_fore_edges[]);
-bl_top_edges[] = Unique(bl_top_edges[]);
-bl_bottom_edges[] = Unique(bl_bottom_edges[]);
-bl_aft_surfaces[] = Unique(bl_aft_surfaces[]);
-bl_fore_surfaces[] = Unique(bl_fore_surfaces[]);
-bl_top_surfaces[] = Unique(bl_top_surfaces[]);
-bl_bottom_surfaces[] = Unique(bl_bottom_surfaces[]);
-
-//Printf("bl_aft_edges length = %g", #bl_aft_edges[]);
-//For i In {0:#bl_aft_edges[]-1}
-    //Printf("bl_aft_edges: %g",bl_aft_edges[i]);
-//EndFor
-//Printf("bl_aft_surfaces length = %g", #bl_aft_surfaces[]);
-//For i In {0:#bl_aft_surfaces[]-1}
-    //Printf("bl_aft_surfaces: %g",bl_aft_surfaces[i]);
-//EndFor
-//
-//Printf("bl_fore_edges length = %g", #bl_fore_edges[]);
-//Printf("bl_top_edges length = %g", #bl_top_edges[]);
-//Printf("bl_bottom_edges length = %g", #bl_bottom_edges[]);
-
-
-// remove the end surfaces
-bl_long_surfaces_nozzle_inlet[] -= bl_corner_surfaces[];
-bl_long_surfaces_nozzle_throat[] -= bl_corner_surfaces[];
-bl_long_surfaces_nozzle_outlet[] -= bl_corner_surfaces[];
-bl_long_surfaces_isolator[] -= bl_corner_surfaces[];
-
-// get the edges
-For i In {0:#bl_long_surfaces_nozzle_inlet[]-1}
-    bl_long_edges_nozzle_inlet[] += Curve In BoundingBox { BoundingBox Surface{ bl_long_surfaces_nozzle_inlet[i] } };
-EndFor
-
-// remove the end surfaces
-bl_long_edges_nozzle_inlet[] = Unique(bl_long_edges_nozzle_inlet[]);
-bl_long_edges_nozzle_inlet[] -= Abs(bl_corner_vert_edges[]);
-
-// get the edges
-For i In {0:#bl_long_surfaces_nozzle_throat[]-1}
-    bl_long_edges_nozzle_throat[] += Curve In BoundingBox { BoundingBox Surface{ bl_long_surfaces_nozzle_throat[i] } };
-EndFor
-
-// remove the end surfaces
-bl_long_edges_nozzle_throat[] = Unique(bl_long_edges_nozzle_throat[]);
-bl_long_edges_nozzle_throat[] -= Abs(bl_corner_vert_edges[]);
-
-// get the edges
-For i In {0:#bl_long_surfaces_nozzle_outlet[]-1}
-    bl_long_edges_nozzle_outlet[] += Curve In BoundingBox { BoundingBox Surface{ bl_long_surfaces_nozzle_outlet[i] } };
-EndFor
-
-// remove the end surfaces
-bl_long_edges_nozzle_outlet[] = Unique(bl_long_edges_nozzle_outlet[]);
-bl_long_edges_nozzle_outlet[] -= Abs(bl_corner_vert_edges[]);
-
-// get the edges
-For i In {0:#bl_long_surfaces_isolator[]-1}
-    bl_long_edges_isolator[] += Curve In BoundingBox { BoundingBox Surface{ bl_long_surfaces_isolator[i] } };
-EndFor
-
-// remove the end surfaces
-bl_long_edges_isolator[] = Unique(bl_long_edges_isolator[]);
-bl_long_edges_isolator[] -= Abs(bl_corner_vert_edges[]);
-
-//
-// get the exterior surfaces of all the volumes
-//
-exterior_surfaces[] = CombinedBoundary { Volume {fluid_volume[]}; };
-interior_surfaces[] = CombinedBoundary { 
-    Volume { 
-        noz_up_surf_vec_interior,
-        noz_throat_surf_vec_interior,
-        noz_down_surf_vec_interior,
-        iso_surf_vec_interior[1]
-    }; 
-};
-//remove the inlet/outlet planes
-exterior_surfaces[] -= interior_surfaces[];
-//Printf("exterior_surfaces length = %g", #exterior_surfaces[]);
-//For i In {0:#exterior_surfaces[]-1}
-    //Printf("exterior_surfaces: %g",exterior_surfaces[i]);
-//EndFor
-//Printf("interior_surfaces length = %g", #interior_surfaces[]);
-//For i In {0:#interior_surfaces[]-1}
-    //Printf("interior_surfaces: %g",interior_surfaces[i]);
-//EndFor
-
-nozzle_inlet_surfaces[] = Surface In BoundingBox {
-    .21 - box_tol, -1., -1.,
-    .21 + box_tol, 1., 1. 
-};
-
-exterior_surfaces[] -= nozzle_inlet_surfaces[];
-exterior_surfaces[] -= -1*nozzle_inlet_surfaces[];
-
-Physical Surface("inflow") = {nozzle_inlet_surfaces[]}; // inlet
-
-Physical Surface('wall') = {
-    exterior_surfaces[]
-};
-
-////////////////////
-// Apply  meshing //
-////////////////////
-//
-
-
-bl_points = 5;
-// end edges and surfaces defining the corner bl meshes, fore/aft/top/bottom on the inlet/outlet planes
-Transfinite Curve {
-    bl_corner_vert_edges[]
-//} = bl_points*scale_fac Using Progression 1.25;
-} = bl_points*scale_fac;
-
-Transfinite Surface {
-    bl_corner_surfaces[]
-};
-
-// end edges defining the fore and aft bl meshes,
-Transfinite Curve {
-    bl_fore_edges[],
-    bl_aft_edges[]
-//} = 12*scale_fac Using Bump 0.35;
-} = 12*scale_fac;
-
-Transfinite Surface {
-    bl_aft_surfaces[],
-    bl_fore_surfaces[]
-};
-
-// end edges defining the top and bottom bl meshes,
-Transfinite Curve {
-    bl_bottom_edges[],
-    bl_top_edges[]
-//} = 16*scale_fac Using Bump 0.35;
-} = 16*scale_fac;
-
-Transfinite Surface {
-    bl_bottom_surfaces[],
-    bl_top_surfaces[]
-};
-
-// side edges defining the x-direction spacing for each volume
-Transfinite Curve {
-    bl_long_edges_nozzle_inlet[]
-//} = 20*scale_fac Using Progression 0.97;
-} = 20*scale_fac;
-
-Transfinite Curve {
-    bl_long_edges_nozzle_throat[]
-//} = 60*scale_fac Using Bump 1.4;
-} = 60*scale_fac;
-
-Transfinite Curve {
-    bl_long_edges_nozzle_outlet[]
-//} = 42*scale_fac Using Progression 1.01;
-} = 42*scale_fac;
-
-Transfinite Curve {
-    bl_long_edges_isolator[]
-} = 100*scale_fac;
-
-Transfinite Surface {
-    bl_long_surfaces_nozzle_inlet[],
-    bl_long_surfaces_nozzle_throat[],
-    bl_long_surfaces_nozzle_outlet[],
-    bl_long_surfaces_isolator[]
-};
-
-
-
-Transfinite Volume{
-    noz_up_surf_vec_top_bl_aft_bl,
-    noz_up_surf_vec_bottom_bl_aft_bl,
-    noz_up_surf_vec_top_bl_fore_bl,
-    noz_up_surf_vec_bottom_bl_fore_bl,
-    noz_up_surf_vec_interior_top_bl,
-    noz_up_surf_vec_interior_bottom_bl,
-    noz_up_surf_vec_interior_aft_bl,
-    noz_up_surf_vec_interior_fore_bl
-};
-
-Transfinite Volume{
-    noz_throat_surf_vec_top_bl_aft_bl,
-    noz_throat_surf_vec_bottom_bl_aft_bl,
-    noz_throat_surf_vec_top_bl_fore_bl,
-    noz_throat_surf_vec_bottom_bl_fore_bl,
-    noz_throat_surf_vec_interior_top_bl,
-    noz_throat_surf_vec_interior_bottom_bl
-    //noz_throat_surf_vec_interior_aft_bl,
-    //noz_throat_surf_vec_interior_fore_bl
-};
-
-Transfinite Volume{
-    noz_down_surf_vec_top_bl_aft_bl,
-    noz_down_surf_vec_bottom_bl_aft_bl,
-    noz_down_surf_vec_top_bl_fore_bl,
-    noz_down_surf_vec_bottom_bl_fore_bl,
-    noz_down_surf_vec_interior_top_bl,
-    noz_down_surf_vec_interior_bottom_bl,
-    noz_down_surf_vec_interior_aft_bl,
-    noz_down_surf_vec_interior_fore_bl
-};
-
-Transfinite Volume{
-    iso_surf_vec_top_bl_aft_bl[1],
-    iso_surf_vec_bottom_bl_aft_bl[1],
-    iso_surf_vec_top_bl_fore_bl[1],
-    iso_surf_vec_bottom_bl_fore_bl[1],
-    iso_surf_vec_interior_top_bl[1],
-    iso_surf_vec_interior_bottom_bl[1],
-    iso_surf_vec_interior_aft_bl[1],
-    iso_surf_vec_interior_fore_bl[1]
-};
-
-// fine the interior surfaces for refinement
-edge_orient[] = {1, 1, 1};
-bb[] = BoundingBox Volume{noz_up_surf_vec_interior};
-noz_up_interior_surfaces[] = Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-noz_up_interior_surfaces[] -= surfaces[];
-
-// fine the interior surfaces for refinement
-bb[] = BoundingBox Volume{noz_throat_surf_vec_interior};
-noz_throat_interior_surfaces[] = Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-noz_throat_interior_surfaces[] -= surfaces[];
-
-// fine the interior surfaces for refinement
-bb[] = BoundingBox Volume{noz_down_surf_vec_interior};
-noz_down_interior_surfaces[] = Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-noz_down_interior_surfaces[] -= surfaces[];
-
-// fine the interior surfaces for refinement
-bb[] = BoundingBox Volume{iso_surf_vec_interior[1]};
-iso_interior_surfaces[] = Surface In BoundingBox { bb[] };
-Call EdgeAndSurfaces;
-iso_interior_surfaces[] -= surfaces[];
-
-// Create distance field from surfaces for wall meshing, excludes cavity, injector
-Field[1] = Distance;
-Field[1].SurfacesList = {
-    noz_up_interior_surfaces[],
-    noz_throat_interior_surfaces[],
-    noz_down_interior_surfaces[],
-    iso_interior_surfaces[]
-};
-Field[1].Sampling = 1000;
-//
-//Create threshold field that varrries element size near boundaries
-Field[2] = Threshold;
-Field[2].InField = 1;
-Field[2].SizeMin = isosize / boundratio;
-Field[2].SizeMax = isosize;
-Field[2].DistMin = 0.000001;
-Field[2].DistMax = 0.005;
-//Field[2].DistMax = 0.0015;
-Field[2].StopAtDistMax = 1;
-
-//  background mesh size in the isolator (downstream of the nozzle)
-Field[3] = Box;
-Field[3].XMin = nozzle_end;
-Field[3].XMax = 1.0;
-Field[3].YMin = -1.0;
-Field[3].YMax = 1.0;
-Field[3].ZMin = -1.0;
-Field[3].ZMax = 1.0;
-Field[3].VIn = isosize;
-Field[3].VOut = bigsize;
-
-// background mesh size upstream of the inlet
-Field[4] = Box;
-Field[4].XMin = 0.;
-Field[4].XMax = nozzle_start;
-Field[4].YMin = -1.0;
-Field[4].YMax = 1.0;
-Field[4].ZMin = -1.0;
-Field[4].ZMax = 1.0;
-Field[4].VIn = inletsize;
-Field[4].VOut = bigsize;
-
-// background mesh size in the nozzle throat
-Field[5] = Box;
-Field[5].XMin = nozzle_start;
-Field[5].XMax = nozzle_end;
-Field[5].YMin = -1.0;
-Field[5].YMax = 1.0;
-Field[5].ZMin = -1.0;
-Field[5].ZMax = 1.0;
-Field[5].Thickness = 0.10;    // interpolate from VIn to Vout over a distance around the box
-Field[5].VIn = nozzlesize;
-Field[5].VOut = bigsize;
-
-// take the minimum of all defined meshing fields
-//
-Field[100] = Min;
-Field[100].FieldsList = {2, 3, 4, 5};
-Background Field = 100;
-
-Mesh.MeshSizeExtendFromBoundary = 0;
-Mesh.MeshSizeFromPoints = 0;
-Mesh.MeshSizeFromCurvature = 0;
-
-
-// Delaunay, seems to respect changing mesh sizes better
-// Mesh.Algorithm3D = 1; 
-// Frontal, makes a better looking mesh, will make bigger elements where I don't want them though
-// Doesn't repsect the mesh sizing parameters ...
-//Mesh.Algorithm3D = 4; 
-// HXT, re-implemented Delaunay in parallel
-Mesh.Algorithm3D = 10; 
-Mesh.OptimizeNetgen = 1;
-Mesh.Smoothing = 100;

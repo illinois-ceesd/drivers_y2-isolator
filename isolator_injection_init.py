@@ -78,7 +78,8 @@ def get_mesh(dim, read_mesh=True):
     """Get the mesh."""
     from meshmode.mesh.io import read_gmsh
     mesh_filename = "data/isolator.msh"
-    mesh = partial(read_gmsh, filename=mesh_filename, force_ambient_dim=dim)
+    mesh = partial(read_gmsh, filename=mesh_filename,
+                   force_ambient_dim=dim)
 
     return mesh
 
