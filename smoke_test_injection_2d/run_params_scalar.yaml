@@ -10,17 +10,16 @@ mach_inj: 0.8
 #nspecies: 7
 nspecies: 2
 #nspecies: 0
+use_av: 3
 alpha_sc: 0.1
 s0_sc: -5.0
 kappa_sc: 0.5
 integrator: euler
-#health_pres_min: 1
-#health_pres_max: 500000
+health_pres_min: 1
+health_pres_max: 500000
 #health_mass_frac_min: -1
 #health_mass_frac_max: 10
 health_pres_min: 2.85350e3
-health_pres_max: 2.74520e5
-#P (min, max) (Pa) = (2.853506538e+03, 2.744951620e+05)
-#Pressure range violation: Simulation Range (p_min=2864.632963930538, p_max=274499.3937453848) Specified Limits (health_pres_min=2853.5, health_pres_max=274496.0)
+health_pres_max: 2.74610e5
 health_mass_frac_min: -2.e-6
 health_mass_frac_max: 1.0001

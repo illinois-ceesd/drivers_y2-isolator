@@ -38,8 +38,8 @@ import pyopencl.array as cla  # noqa
 import math
 from functools import partial
 
+from mirgecom.discretization import create_discretization_collection
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
 from mirgecom.simutil import (
@@ -78,7 +78,8 @@ def get_mesh(dim, read_mesh=True):
     """Get the mesh."""
     from meshmode.mesh.io import read_gmsh
     mesh_filename = "data/isolator.msh"
-    mesh = partial(read_gmsh, filename=mesh_filename, force_ambient_dim=dim)
+    mesh = partial(read_gmsh, filename=mesh_filename,
+                   force_ambient_dim=dim)
 
     return mesh
 
@@ -870,9 +871,11 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     gamma = 1.4
     mw_o2 = 15.999*2
     mw_n2 = 14.0067*2
+    mw_c2h4 = 28.05
+    mw_h2 = 1.00784*2
     mf_o2 = 0.273
-    mf_c2h4 = 0.5
-    mf_h2 = 0.5
+    mf_c2h4 = mw_c2h4/(mw_c2h4 + mw_h2)
+    mf_h2 = 1 - mf_c2h4
     # visocsity @ 400C, Pa-s
     mu_o2 = 3.76e-5
     mu_n2 = 3.19e-5
@@ -1095,7 +1098,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     if rank == 0:
         logging.info("Making discretization")
 
-    dcoll = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
+    dcoll = create_discretization_collection(
+        actx, local_mesh, order=order, mpi_communicator=comm)
 
     if rank == 0:
         logging.info("Done making discretization")
@@ -1105,9 +1109,9 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
 
     current_cv = bulk_init(dcoll=dcoll, x_vec=actx.thaw(dcoll.nodes()),
                            eos=eos, time=0)
+    smoothness = 0.*current_cv.mass
     current_state = force_evaluation(actx,
-                                     make_fluid_state(current_cv, gas_model,
-                                                      init_temperature))
+        make_fluid_state(current_cv, gas_model, init_temperature, smoothness))
 
     visualizer = make_visualizer(dcoll)
 
