@@ -36,7 +36,7 @@ from pytools.obj_array import make_obj_array
 from mirgecom.discretization import create_discretization_collection
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.shortcuts import make_visualizer
-from grudge.dof_desc import DTAG_BOUNDARY
+from grudge.dof_desc import BoundaryDomainTag
 #from grudge.op import nodal_max, nodal_min
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
@@ -990,18 +990,18 @@ def main(ctx_factory=cl.create_some_context,
         return sponge_sigma*(current_state.cv - cv)
 
     from mirgecom.gas_model import project_fluid_state
-    from grudge.dof_desc import DOFDesc, as_dofdesc
-    dd_base_vol = DOFDesc("vol")
+    from grudge.dof_desc import DD_VOLUME_ALL, as_dofdesc
+    dd_base_vol = DD_VOLUME_ALL
 
-    def get_target_state_on_boundary(btag):
+    def get_target_state_on_boundary(dd_bdry):
         return project_fluid_state(
             dcoll, dd_base_vol,
-            as_dofdesc(btag).with_discr_tag(quadrature_tag),
+            as_dofdesc(dd_bdry).with_discr_tag(quadrature_tag),
             target_state, gas_model
         )
 
     flow_ref_state = \
-        get_target_state_on_boundary(DTAG_BOUNDARY("flow"))
+        get_target_state_on_boundary(BoundaryDomainTag("flow"))
 
     flow_ref_state = force_evaluation(actx, flow_ref_state)
 
@@ -1015,15 +1015,15 @@ def main(ctx_factory=cl.create_some_context,
     slip_wall = SymmetryBoundary()
 
     boundaries = {
-        DTAG_BOUNDARY("flow"): flow_boundary,
-        DTAG_BOUNDARY("wall"): wall
+        BoundaryDomainTag("flow"): flow_boundary,
+        BoundaryDomainTag("wall"): wall
     }
     # allow for a slip boundary inside the injector
     if vel_sigma_inj == 0:
         boundaries = {
-            DTAG_BOUNDARY("flow"): flow_boundary,
-            DTAG_BOUNDARY("wall_without_injector"): wall,
-            DTAG_BOUNDARY("injector_wall"): slip_wall
+            BoundaryDomainTag("flow"): flow_boundary,
+            BoundaryDomainTag("wall_without_injector"): wall,
+            BoundaryDomainTag("injector_wall"): slip_wall
         }
 
     #from mirgecom.simutil import boundary_report
