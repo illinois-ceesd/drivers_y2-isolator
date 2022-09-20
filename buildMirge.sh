@@ -105,11 +105,6 @@ else
   fi
 fi
 
-cd loopy
-## Actually set an argument size limit
-sed -i.bak "s,limit_arg_size_nbytes: Optional\[int\] = None,limit_arg_size_nbytes: Optional[int] = 1024," loopy/target/pyopencl.py
-cd ..
-
 # add a few packages that are required for our development process
 source config/activate_env.sh
 #conda activate ${conda_env}

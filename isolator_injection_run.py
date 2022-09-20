@@ -43,7 +43,6 @@ from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
     logmgr_set_time,
-    logmgr_add_device_name,
     logmgr_add_device_memory_usage,
 )
 
@@ -84,7 +83,7 @@ from mirgecom.fluid import make_conserved
 from mirgecom.limiter import bound_preserving_limiter
 from mirgecom.gas_model import make_operator_fluid_states
 from mirgecom.navierstokes import grad_cv_operator
-from dataclasses import replace
+#from dataclasses import replace
 
 
 class SingleLevelFilter(logging.Filter):
@@ -781,7 +780,6 @@ def main(ctx_factory=cl.create_some_context,
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
-        logmgr_add_device_name(logmgr, queue)
         logmgr_add_device_memory_usage(logmgr, queue)
 
         logmgr.add_watches([
@@ -830,6 +828,12 @@ def main(ctx_factory=cl.create_some_context,
     from grudge.dt_utils import characteristic_lengthscales
     length_scales = characteristic_lengthscales(actx, dcoll)
 
+    # use dummy boundaries to setup the smoothness state for the target
+    target_boundaries = {
+        DTAG_BOUNDARY("flow"): DummyBoundary(),
+        DTAG_BOUNDARY("wall"): IsothermalWallBoundary()
+    }
+
     # compiled wrapper for grad_cv_operator
     def _grad_cv_operator(fluid_state, time):
         return grad_cv_operator(dcoll=dcoll, gas_model=gas_model,
@@ -840,10 +844,18 @@ def main(ctx_factory=cl.create_some_context,
 
     grad_cv_operator_compiled = actx.compile(_grad_cv_operator) # noqa
 
+    def _grad_cv_operator_target(fluid_state, time):
+        return grad_cv_operator(dcoll=dcoll, gas_model=gas_model,
+                                boundaries=target_boundaries,
+                                state=fluid_state,
+                                time=time,
+                                quadrature_tag=quadrature_tag)
+
+    grad_cv_operator_target_compiled = actx.compile(_grad_cv_operator_target) # noqa
+
     def compute_smoothness(cv, dv, grad_cv):
 
         from mirgecom.fluid import velocity_gradient
-        #div_v = actx.np.abs(np.trace(velocity_gradient(cv, grad_cv)))
         div_v = np.trace(velocity_gradient(cv, grad_cv))
 
         gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
@@ -856,6 +868,13 @@ def main(ctx_factory=cl.create_some_context,
         return smoothness*gamma_sc*length_scales
 
     compute_smoothness_compiled = actx.compile(compute_smoothness) # noqa
+
+    def _smoothness_indicator(cv):
+
+        return smoothness_indicator(dcoll, cv.mass,
+                                    kappa=kappa_sc, s0=s0_sc)
+
+    smoothness_indicator_compiled = actx.compile(_smoothness_indicator)
 
     if restart_filename:
         if rank == 0:
@@ -900,46 +919,39 @@ def main(ctx_factory=cl.create_some_context,
     else:
         target_cv = restart_cv
 
-    no_smoothness = 0.*restart_cv.mass
+    no_smoothness = force_evaluation(actx, 0.*restart_cv.mass)
     smoothness = no_smoothness
     target_smoothness = smoothness
     if use_av == 1 or use_av == 2:
-        smoothness = smoothness_indicator(dcoll, restart_cv.mass,
-                                          kappa=kappa_sc, s0=s0_sc)
-        target_smoothness = smoothness_indicator(dcoll, target_cv.mass,
-                                                 kappa=kappa_sc, s0=s0_sc)
+        smoothness = smoothness_indicator_compiled(restart_cv)
+        target_smoothness = smoothness_indicator_compiled(target_cv)
 
-    current_state = make_fluid_state(restart_cv, gas_model, temperature_seed,
+    current_state = create_fluid_state(restart_cv, temperature_seed,
                                      smoothness=smoothness)
-    target_state = make_fluid_state(target_cv, gas_model, temperature_seed,
+    target_state = create_fluid_state(target_cv, temperature_seed,
                                     smoothness=target_smoothness)
 
-    if use_av == 2:
-        # use dummy boundaries to setup the smoothness state for the target
-        target_boundaries = {
-            DTAG_BOUNDARY("flow"): DummyBoundary(),
-            DTAG_BOUNDARY("wall"): IsothermalWallBoundary()
-        }
-
-        # use the divergence to compute the smoothness field
-        target_grad_cv = grad_cv_operator(
-            dcoll, gas_model, target_boundaries, target_state,
-            time=0., quadrature_tag=quadrature_tag)
-        target_smoothness = compute_smoothness(
+    if use_av == 3:
+        target_grad_cv = grad_cv_operator_target_compiled(
+            target_state, time=0.)
+        target_smoothness = compute_smoothness_compiled(
             cv=target_cv, dv=target_state.dv, grad_cv=target_grad_cv)
 
+        target_state = create_fluid_state(cv=target_cv,
+                                        temperature_seed=temperature_seed,
+                                        smoothness=target_smoothness)
+
+        """
+        # This should be equivalent and faster?
+        # But the compilation is super slow
+        # and doesn't work in parallel?
         # avoid recomputation of temperature
         new_dv = replace(target_state.dv, smoothness=target_smoothness)
         target_state = replace(target_state, dv=new_dv)
         new_tv = gas_model.transport.transport_vars(
             cv=target_cv, dv=new_dv, eos=gas_model.eos)
         target_state = replace(target_state, tv=new_tv)
-
-    # MJA use the seed from restart
-    # temperature_seed = current_state.temperature
-
-    force_evaluation(actx, current_state)
-    force_evaluation(actx, target_state)
+        """
 
     # if you divide by 2.355, 50% of the spark is within this diameter
     spark_diameter /= 2.355
@@ -1414,10 +1426,7 @@ def main(ctx_factory=cl.create_some_context,
                                                      smoothness=no_smoothness,
                                                      temperature_seed=tseed)
                 elif use_av == 2:
-                    # limited cv here to compute smoothness
-                    smoothness = smoothness_indicator(dcoll, cv_limited.mass,
-                                                      kappa=kappa_sc, s0=s0_sc)
-                    force_evaluation(actx, smoothness)
+                    smoothness = smoothness_indicator_compiled(cv_limited)
                     # unlimited cv here as that is what gets written
                     fluid_state = create_fluid_state(cv=cv,
                                                      smoothness=smoothness,
@@ -1429,20 +1438,15 @@ def main(ctx_factory=cl.create_some_context,
                                                      temperature_seed=tseed)
 
                     # recompute the dv to have the correct smoothness
-                    # this is forcing a recompile, only do it at dump time
-                    # not sure why the compiled version of grad_cv doesn't work
                     if do_viz:
                         # use the divergence to compute the smoothness field
                         # force_evaluation(actx, t)
-                        grad_cv = grad_cv_operator(
-                            dcoll, gas_model, boundaries, fluid_state,
-                            time=t, quadrature_tag=quadrature_tag)
-                        # grad_cv = grad_cv_operator_compiled(fluid_state,
-                        #                                     time=t)
+                        grad_cv = grad_cv_operator_compiled(fluid_state,
+                                                            time=t)
                         # limited cv here to compute smoothness
-                        smoothness = compute_smoothness(cv=cv_limited,
-                                                        dv=fluid_state.dv,
-                                                        grad_cv=grad_cv)
+                        smoothness = compute_smoothness_compiled(cv=cv_limited,
+                                                                 dv=fluid_state.dv,
+                                                                 grad_cv=grad_cv)
 
                         # unlimited cv here as that is what gets written
                         fluid_state = create_fluid_state(cv=cv,
@@ -1552,6 +1556,7 @@ def main(ctx_factory=cl.create_some_context,
             """
             # This should be equivalent and faster?
             # But the compilation is super slow
+            # and doesn't work in parallel?
             new_dv = replace(fluid_state.dv, smoothness=smoothness)
             fluid_state = replace(fluid_state, dv=new_dv)
             new_tv = gas_model.transport.transport_vars(
@@ -1632,7 +1637,7 @@ def main(ctx_factory=cl.create_some_context,
         fluid_state = create_fluid_state(cv=current_state.cv,
                                          temperature_seed=tseed,
                                          smoothness=no_smoothness)
-        current_cv_limited, limit_species_rhs = limit_species_source(
+        current_cv_limited, limit_species_rhs = limit_species_source_compiled(
             cv=current_state.cv, pressure=fluid_state.pressure,
             temperature=fluid_state.temperature,
             species_enthalpies=fluid_state.species_enthalpies)
@@ -1642,8 +1647,7 @@ def main(ctx_factory=cl.create_some_context,
                                            smoothness=no_smoothness,
                                            temperature_seed=tseed)
     elif use_av == 2:
-        smoothness = smoothness_indicator(dcoll, current_cv_limited.mass,
-                                          kappa=kappa_sc, s0=s0_sc)
+        smoothness = smoothness_indicator_compiled(current_cv_limited)
         current_state = create_fluid_state(cv=current_cv,
                                            temperature_seed=tseed,
                                            smoothness=smoothness)
@@ -1653,12 +1657,10 @@ def main(ctx_factory=cl.create_some_context,
                                            smoothness=no_smoothness)
 
         # use the divergence to compute the smoothness field
-        current_grad_cv = grad_cv_operator(
-            dcoll, gas_model, boundaries, current_state, time=current_t,
-            quadrature_tag=quadrature_tag)
-        # smoothness = compute_smoothness_compiled(current_cv, grad_cv)
-        smoothness = compute_smoothness(cv=current_cv, dv=current_state.dv,
-                                        grad_cv=current_grad_cv)
+        current_grad_cv = grad_cv_operator_compiled(
+            fluid_state=current_state, time=current_t)
+        smoothness = compute_smoothness_compiled(cv=current_cv, dv=current_state.dv,
+                                                 grad_cv=current_grad_cv)
 
         current_state = create_fluid_state(cv=current_cv,
                                            temperature_seed=tseed,
