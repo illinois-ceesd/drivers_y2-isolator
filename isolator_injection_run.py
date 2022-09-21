@@ -765,7 +765,7 @@ def main(ctx_factory=cl.create_some_context,
         logging.info("Making discretization")
 
     dcoll = create_discretization_collection(
-        actx, local_mesh, order=order, mpi_communicator=comm)
+        actx, volume_meshes=local_mesh, order=order)
 
     from grudge.dof_desc import DISCR_TAG_QUAD
     if use_overintegration:
@@ -830,8 +830,8 @@ def main(ctx_factory=cl.create_some_context,
 
     # use dummy boundaries to setup the smoothness state for the target
     target_boundaries = {
-        DTAG_BOUNDARY("flow"): DummyBoundary(),
-        DTAG_BOUNDARY("wall"): IsothermalWallBoundary()
+        BoundaryDomainTag("flow"): DummyBoundary(),
+        BoundaryDomainTag("wall"): IsothermalWallBoundary()
     }
 
     # compiled wrapper for grad_cv_operator
@@ -883,7 +883,7 @@ def main(ctx_factory=cl.create_some_context,
         temperature_seed = restart_data["temperature_seed"]
         if restart_order != order:
             restart_dcoll = create_discretization_collection(
-                actx, local_mesh, order=restart_order, mpi_communicator=comm)
+                actx, local_mesh, order=restart_order)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
@@ -905,7 +905,7 @@ def main(ctx_factory=cl.create_some_context,
         target_cv = target_data["cv"]
         if target_order != order:
             target_dcoll = create_discretization_collection(
-                actx, local_mesh, order=target_order, mpi_communicator=comm)
+                actx, local_mesh, order=target_order)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
