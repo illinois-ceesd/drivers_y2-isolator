@@ -629,12 +629,10 @@ Line(l_isolator_bl_top_end) = {p_cavity_front_bl_top, p_cavity_front_top};
 //Create lineloop of this geometry
 // start on the bottom left and go around clockwise
 Curve Loop(400) = { 
-    //l_nozzle_top_bl_outlet,
-    -l_nozzle_top_bl_outlet,
+    l_nozzle_top_bl_outlet,
     l_isolator_top,
-    //l_isolator_bl_top_end,
-    -l_isolator_bl_top_end,
-    -l_isolator_bl_top
+    l_isolator_bl_top_end,
+    l_isolator_bl_top
 }; 
 Plane Surface(400) = {400}; // the back wall top bl
 

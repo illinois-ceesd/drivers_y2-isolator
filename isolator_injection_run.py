@@ -36,7 +36,7 @@ from pytools.obj_array import make_obj_array
 from mirgecom.discretization import create_discretization_collection
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.shortcuts import make_visualizer
-from grudge.dof_desc import DTAG_BOUNDARY
+from grudge.dof_desc import BoundaryDomainTag
 #from grudge.op import nodal_max, nodal_min
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
@@ -667,6 +667,54 @@ def main(ctx_factory=cl.create_some_context,
         if nlimit > 0:
             print(f"\tSpecies mass fractions limited to [0:1] over {nlimit} steps")
 
+        transport_alpha = 0.6
+        transport_beta = 4.093e-7
+        transport_sigma = 2.0
+        transport_n = 0.666
+
+        if transport_type == 0:
+            print("\t Simple transport model:")
+            print("\t\t constant viscosity, species diffusivity")
+            print(f"\tmu = {mu}")
+            print(f"\tkappa = {kappa}")
+            print(f"\tspecies diffusivity = {spec_diff}")
+        elif transport_type == 1:
+            print("\t Power law transport model:")
+            print("\t\t temperature dependent viscosity, species diffusivity")
+            print(f"\ttransport_alpha = {transport_alpha}")
+            print(f"\ttransport_beta = {transport_beta}")
+            print(f"\ttransport_sigma = {transport_sigma}")
+            print(f"\ttransport_n = {transport_n}")
+            print(f"\tspecies diffusivity = {spec_diff}")
+        elif transport_type == 2:
+            print("\t Pyrometheus transport model:")
+            print("\t\t temperature/mass fraction dependence")
+        else:
+            error_message = "Unknown transport_type {}".format(transport_type)
+            raise RuntimeError(error_message)
+
+    spec_diffusivity = spec_diff * np.ones(nspecies)
+    if transport_type == 0:
+        physical_transport_model = SimpleTransport(
+            viscosity=mu, thermal_conductivity=kappa,
+            species_diffusivity=spec_diffusivity)
+    if transport_type == 1:
+        physical_transport_model = PowerLawTransport(
+            alpha=transport_alpha, beta=transport_beta,
+            sigma=transport_sigma, n=transport_n,
+            species_diffusivity=spec_diffusivity)
+
+    if use_av == 0 or use_av == 1:
+        transport_model = physical_transport_model
+    elif use_av == 2:
+        transport_model = ArtificialViscosityTransport(
+            physical_transport=physical_transport_model,
+            av_mu=alpha_sc, av_prandtl=0.75)
+    elif use_av == 3:
+        transport_model = ArtificialViscosityTransportDiv(
+            physical_transport=physical_transport_model,
+            av_mu=alpha_sc, av_prandtl=0.75)
+
     chem_source_tol = 1.e-10
     # make the eos
     if nspecies < 3:
@@ -792,7 +840,7 @@ def main(ctx_factory=cl.create_some_context,
         logging.info("Making discretization")
 
     dcoll = create_discretization_collection(
-        actx, local_mesh, order=order, mpi_communicator=comm)
+        actx, volume_meshes=local_mesh, order=order)
 
     from grudge.dof_desc import DISCR_TAG_QUAD
     if use_overintegration:
@@ -857,8 +905,8 @@ def main(ctx_factory=cl.create_some_context,
 
     # use dummy boundaries to setup the smoothness state for the target
     target_boundaries = {
-        DTAG_BOUNDARY("flow"): DummyBoundary(),
-        DTAG_BOUNDARY("wall"): IsothermalWallBoundary()
+        BoundaryDomainTag("flow"): DummyBoundary(),
+        BoundaryDomainTag("wall"): IsothermalWallBoundary()
     }
 
     # compiled wrapper for grad_cv_operator
@@ -910,7 +958,7 @@ def main(ctx_factory=cl.create_some_context,
         temperature_seed = restart_data["temperature_seed"]
         if restart_order != order:
             restart_dcoll = create_discretization_collection(
-                actx, local_mesh, order=restart_order, mpi_communicator=comm)
+                actx, local_mesh, order=restart_order)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
@@ -932,7 +980,7 @@ def main(ctx_factory=cl.create_some_context,
         target_cv = target_data["cv"]
         if target_order != order:
             target_dcoll = create_discretization_collection(
-                actx, local_mesh, order=target_order, mpi_communicator=comm)
+                actx, local_mesh, order=target_order)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
@@ -1017,18 +1065,18 @@ def main(ctx_factory=cl.create_some_context,
         return sponge_sigma*(current_state.cv - cv)
 
     from mirgecom.gas_model import project_fluid_state
-    from grudge.dof_desc import DOFDesc, as_dofdesc
-    dd_base_vol = DOFDesc("vol")
+    from grudge.dof_desc import DD_VOLUME_ALL, as_dofdesc
+    dd_base_vol = DD_VOLUME_ALL
 
-    def get_target_state_on_boundary(btag):
+    def get_target_state_on_boundary(dd_bdry):
         return project_fluid_state(
             dcoll, dd_base_vol,
-            as_dofdesc(btag).with_discr_tag(quadrature_tag),
+            as_dofdesc(dd_bdry).with_discr_tag(quadrature_tag),
             target_state, gas_model
         )
 
     flow_ref_state = \
-        get_target_state_on_boundary(DTAG_BOUNDARY("flow"))
+        get_target_state_on_boundary(BoundaryDomainTag("flow"))
 
     flow_ref_state = force_evaluation(actx, flow_ref_state)
 
@@ -1042,15 +1090,15 @@ def main(ctx_factory=cl.create_some_context,
     slip_wall = SymmetryBoundary()
 
     boundaries = {
-        DTAG_BOUNDARY("flow"): flow_boundary,
-        DTAG_BOUNDARY("wall"): wall
+        BoundaryDomainTag("flow"): flow_boundary,
+        BoundaryDomainTag("wall"): wall
     }
     # allow for a slip boundary inside the injector
     if vel_sigma_inj == 0:
         boundaries = {
-            DTAG_BOUNDARY("flow"): flow_boundary,
-            DTAG_BOUNDARY("wall_without_injector"): wall,
-            DTAG_BOUNDARY("injector_wall"): slip_wall
+            BoundaryDomainTag("flow"): flow_boundary,
+            BoundaryDomainTag("wall_without_injector"): wall,
+            BoundaryDomainTag("injector_wall"): slip_wall
         }
 
     #from mirgecom.simutil import boundary_report
