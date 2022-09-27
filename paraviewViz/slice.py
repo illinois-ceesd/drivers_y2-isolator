@@ -43,7 +43,7 @@ def simpleSlice(
   data = XMLPartitionedUnstructuredGridReader(FileName=[solutionFile])
   #data.PointArrayStatus = ['cv_mass', 'cv_energy', 'cv_momentum', 'dv_temperature', 'dv_pressure', 'mach', 'velocity', 'sponge_sigma', 'alpha', 'tagged_cells', 'cfl']
   #data.PointArrayStatus = ['cv_mass', 'cv_energy', 'cv_momentum', 'dv_temperature', 'dv_pressure', 'mach', 'velocity', 'sponge_sigma', 'alpha', 'tagged_cells', 'cfl', 'Y_air', 'Y_fuel']
-  data.PointArrayStatus = ['cv_mass', 'cv_energy', 'cv_momentum', 'dv_temperature', 'dv_pressure', 'mach', 'velocity', 'sponge_sigma', 'alpha', 'tagged_cells', 'cfl', 'Y_C2H4', 'Y_H2', 'Y_H2O', 'Y_O2', 'Y_CO', 'Y_fuel', 'Y_air']
+  data.PointArrayStatus = ['cv_mass', 'cv_energy', 'cv_momentum', 'dv_temperature', 'dv_pressure', 'mach', 'velocity', 'sponge_sigma', 'alpha', 'tagged_cells', 'mu', 'cfl', 'Y_C2H4', 'Y_H2', 'Y_H2O', 'Y_O2', 'Y_CO', 'Y_fuel', 'Y_air']
   readTime = time.time() - t0
 
   # Properties modified on data

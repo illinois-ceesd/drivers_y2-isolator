@@ -830,7 +830,7 @@ EndFor
 //
 exterior_surfaces[] = CombinedBoundary { Volume {fluid_volume[]}; };
 interior_surfaces[] = Boundary { Volume { surface_vector_interior[1]}; };
- remove the inlet/outlet planes
+//remove the inlet/outlet planes
 interior_surfaces[] -= exterior_surfaces[];
 Printf("exterior_surfaces length = %g", #exterior_surfaces[]);
 For i In {0:#exterior_surfaces[]-1}
