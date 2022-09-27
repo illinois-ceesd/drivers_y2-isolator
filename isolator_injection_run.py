@@ -363,8 +363,8 @@ def main(ctx_factory=cl.create_some_context,
 
     # initialize the ignition spark
     spark_center = np.zeros(shape=(dim,))
-    spark_center[0] = 0.677
-    spark_center[1] = -0.021
+    spark_init_loc_x = 0.677
+    spark_init_loc_y = -0.021
     if dim == 3:
         spark_center[2] = 0.035/2.
     spark_diameter = 0.0025
@@ -497,6 +497,14 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
+            spark_init_loc_x = float(input_data["ignition_loc_x"])
+        except KeyError:
+            pass
+        try:
+            spark_init_loc_y = float(input_data["ignition_loc_y"])
+        except KeyError:
+            pass
+        try:
             use_sponge = bool(input_data["use_sponge"])
         except KeyError:
             pass
@@ -575,6 +583,8 @@ def main(ctx_factory=cl.create_some_context,
         print(f"\tTime integration {integrator}")
         print("#### Simluation control data: ####\n")
 
+    spark_center[0] = spark_init_loc_x
+    spark_center[1] = spark_init_loc_y
     if rank == 0 and use_ignition:
         print("\n#### Ignition control parameters ####")
         print(f"spark center ({spark_center[0]},{spark_center[1]})")
@@ -657,11 +667,41 @@ def main(ctx_factory=cl.create_some_context,
         if nlimit > 0:
             print(f"\tSpecies mass fractions limited to [0:1] over {nlimit} steps")
 
-        transport_alpha = 0.6
-        transport_beta = 4.093e-7
-        transport_sigma = 2.0
-        transport_n = 0.666
+    chem_source_tol = 1.e-10
+    # make the eos
+    if nspecies < 3:
+        eos = IdealSingleGas(gamma=gamma, gas_const=r)
+        species_names = ["air", "fuel"]
+    else:
+        from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
+        from uiuc import Thermochemistry
+        pyro_mech = get_pyrometheus_wrapper_class(
+            pyro_class=Thermochemistry, temperature_niter=pyro_temp_iter,
+            zero_level=chem_source_tol)(actx.np)
+        eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
+        species_names = pyro_mech.species_names
 
+        # find name species indicies
+        for i in range(nspecies):
+            if species_names[i] == "H2":
+                i_h2 = i
+            """
+            if species_names[i] == "C2H4":
+                i_c2h4 = i
+            if species_names[i] == "O2":
+                i_ox = i
+            if species_names[i] == "N2":
+                i_di = i
+            """
+
+    transport_alpha = 0.6
+    transport_beta = 4.093e-7
+    transport_sigma = 2.0
+    transport_n = 0.666
+    transport_lewis = np.ones(nspecies)
+    transport_lewis[i_h2] = 0.2
+
+    if rank == 0:
         if transport_type == 0:
             print("\t Simple transport model:")
             print("\t\t constant viscosity, species diffusivity")
@@ -675,7 +715,7 @@ def main(ctx_factory=cl.create_some_context,
             print(f"\ttransport_beta = {transport_beta}")
             print(f"\ttransport_sigma = {transport_sigma}")
             print(f"\ttransport_n = {transport_n}")
-            print(f"\tspecies diffusivity = {spec_diff}")
+            print(f"\tLewis Number = {transport_lewis}")
         elif transport_type == 2:
             print("\t Pyrometheus transport model:")
             print("\t\t temperature/mass fraction dependence")
@@ -692,7 +732,8 @@ def main(ctx_factory=cl.create_some_context,
         physical_transport_model = PowerLawTransport(
             alpha=transport_alpha, beta=transport_beta,
             sigma=transport_sigma, n=transport_n,
-            species_diffusivity=spec_diffusivity)
+            species_diffusivity=spec_diffusivity,
+            lewis=transport_lewis)
 
     if use_av == 0 or use_av == 1:
         transport_model = physical_transport_model
@@ -704,20 +745,6 @@ def main(ctx_factory=cl.create_some_context,
         transport_model = ArtificialViscosityTransportDiv(
             physical_transport=physical_transport_model,
             av_mu=alpha_sc, av_prandtl=0.75)
-
-    chem_source_tol = 1.e-10
-    # make the eos
-    if nspecies < 3:
-        eos = IdealSingleGas(gamma=gamma, gas_const=r)
-        species_names = ["air", "fuel"]
-    else:
-        from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
-        from uiuc import Thermochemistry
-        pyro_mech = get_pyrometheus_wrapper_class(
-            pyro_class=Thermochemistry, temperature_niter=pyro_temp_iter,
-            zero_level=chem_source_tol)(actx.np)
-        eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
-        species_names = pyro_mech.species_names
 
     gas_model = GasModel(eos=eos, transport=transport_model)
 
@@ -1189,9 +1216,12 @@ def main(ctx_factory=cl.create_some_context,
             cell_Pe_heat = length_scales*cv.speed/alpha_heat
             from mirgecom.viscous import get_local_max_species_diffusivity
             d_alpha_max = \
-                get_local_max_species_diffusivity(fluid_state.array_context,
-                                                  fluid_state.species_diffusivity)
+                get_local_max_species_diffusivity(
+                    fluid_state.array_context,
+                    fluid_state.species_diffusivity
+                )
             cell_Pe_mass = length_scales*cv.speed/d_alpha_max
+            cell_Pe_mass = 0.
             viz_ext = [("Re", cell_Re),
                        ("Pe_mass", cell_Pe_mass),
                        ("Pe_heat", cell_Pe_heat)]
@@ -1287,7 +1317,6 @@ def main(ctx_factory=cl.create_some_context,
 
         if state.is_viscous:
             nu = state.viscosity/state.mass_density
-            # this appears to break lazy for whatever reason
             from mirgecom.viscous import get_local_max_species_diffusivity
             d_alpha_max = \
                 get_local_max_species_diffusivity(

@@ -41,7 +41,7 @@ from pytools.obj_array import make_obj_array
 
 from arraycontext import thaw
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.eager import EagerDGDiscretization
+from mirgecom.discretization import create_discretization_collection
 from grudge.shortcuts import make_visualizer
 
 from mirgecom.simutil import (
@@ -268,7 +268,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if rank == 0:
         logging.info("Making discretization")
 
-    dcoll = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
+    dcoll = create_discretization_collection(
+        actx, local_mesh, order=order, mpi_communicator=comm)
 
     if rank == 0:
         logging.info("Done making discretization")
@@ -282,11 +283,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         restart_cv = restart_data["cv"]
         temperature_seed = restart_data["temperature_seed"]
         if restart_order != order:
-            restart_dcoll = EagerDGDiscretization(
-                actx,
-                local_mesh,
-                order=restart_order,
-                mpi_communicator=comm)
+            restart_dcoll = create_discretization_collection(
+                actx, local_mesh, order=restart_order, mpi_communicator=comm)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
@@ -311,7 +309,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     # keep air and fuel mass fractions between 0 and 1
     from mirgecom.limiter import bound_preserving_limiter
     spec_lim = make_obj_array([
-        bound_preserving_limiter(discr, restart_cv.species_mass_fractions[i],
+        bound_preserving_limiter(dcoll, restart_cv.species_mass_fractions[i],
                                  mmin=0.0, mmax=1.0, modify_average=True)
         for i in range(2)
     ])
