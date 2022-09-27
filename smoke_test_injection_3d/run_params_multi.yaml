@@ -20,5 +20,5 @@ integrator: euler
 #health_mass_frac_max: 10
 health_pres_min: 2.21976e3
 health_pres_max: 2.74337e5
-health_mass_frac_min: -6.e-9
-health_mass_frac_max: 0.7271
+health_mass_frac_min: -1.e-6
+health_mass_frac_max: 0.934

@@ -40,7 +40,6 @@ from arraycontext import thaw, freeze, flatten, unflatten, to_numpy, from_numpy
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
-from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.op import nodal_max, nodal_min
 from logpyle import IntervalTimer, set_dt
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
@@ -99,9 +98,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     queue = cl.CommandQueue(cl_ctx)
 
-    actx = actx_class(
-        queue,
-        allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+    from mirgecom.simutil import get_reasonable_memory_pool
+    alloc = get_reasonable_memory_pool(cl_ctx, queue)
+
+    actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
 
     # working gas: O2/N2 #
     #   O2 mass fraction 0.273
@@ -166,7 +166,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             logging.info("Restarting soln.")
         current_cv = restart_data["cv"]
 
-    discr = EagerDGDiscretization(
+    dcoll = EagerDGDiscretization(
         actx, local_mesh, order=order, mpi_communicator=comm
     )
 
@@ -174,7 +174,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     cv = fluid_state.cv
     dv = fluid_state.dv
 
-    nodes = thaw(discr.nodes(), actx)
+    nodes = thaw(dcoll.nodes(), actx)
 
     xpos = nodes[0]
     ypos = nodes[1]

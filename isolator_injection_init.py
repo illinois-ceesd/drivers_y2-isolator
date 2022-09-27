@@ -38,18 +38,17 @@ import pyopencl.array as cla  # noqa
 import math
 from functools import partial
 
-from arraycontext import thaw, freeze
+from mirgecom.discretization import create_discretization_collection
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
 from mirgecom.simutil import (
     generate_and_distribute_mesh,
     write_visfile,
+    force_evaluation
 )
 from mirgecom.restart import write_restart_file
 from mirgecom.mpi import mpi_entry_point
-import pyopencl.tools as cl_tools
 
 from mirgecom.fluid import make_conserved
 from mirgecom.eos import IdealSingleGas, PyrometheusMixture
@@ -79,7 +78,8 @@ def get_mesh(dim, read_mesh=True):
     """Get the mesh."""
     from meshmode.mesh.io import read_gmsh
     mesh_filename = "data/isolator.msh"
-    mesh = partial(read_gmsh, filename=mesh_filename, force_ambient_dim=dim)
+    mesh = partial(read_gmsh, filename=mesh_filename,
+                   force_ambient_dim=dim)
 
     return mesh
 
@@ -316,7 +316,7 @@ class InitACTII:
         self._inj_ybottom = inj_ybottom
         self._inj_mach = inj_mach
 
-    def __call__(self, discr, x_vec, eos, *, time=0.0):
+    def __call__(self, dcoll, x_vec, eos, *, time=0.0):
         """Create the solution state at locations *x_vec*.
 
         Parameters
@@ -766,14 +766,13 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
+    from mirgecom.simutil import get_reasonable_memory_pool
+    alloc = get_reasonable_memory_pool(cl_ctx, queue)
+
     if lazy:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                mpi_base_tag=12000)
+        actx = actx_class(comm, queue, mpi_base_tag=12000, allocator=alloc)
     else:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                force_device_scalars=True)
+        actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
 
     # discretization and model control
     order = 1
@@ -872,9 +871,11 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     gamma = 1.4
     mw_o2 = 15.999*2
     mw_n2 = 14.0067*2
+    mw_c2h4 = 28.05
+    mw_h2 = 1.00784*2
     mf_o2 = 0.273
-    mf_c2h4 = 0.5
-    mf_h2 = 0.5
+    mf_c2h4 = mw_c2h4/(mw_c2h4 + mw_h2)
+    mf_h2 = 1 - mf_c2h4
     # visocsity @ 400C, Pa-s
     mu_o2 = 3.76e-5
     mu_n2 = 3.19e-5
@@ -1097,7 +1098,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     if rank == 0:
         logging.info("Making discretization")
 
-    discr = EagerDGDiscretization(actx, local_mesh, order, mpi_communicator=comm)
+    dcoll = create_discretization_collection(
+        actx, local_mesh, order=order, mpi_communicator=comm)
 
     if rank == 0:
         logging.info("Done making discretization")
@@ -1105,12 +1107,13 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
     if rank == 0:
         logging.info("Initializing solution")
 
-    current_cv = bulk_init(discr=discr, x_vec=thaw(discr.nodes(), actx),
+    current_cv = bulk_init(dcoll=dcoll, x_vec=actx.thaw(dcoll.nodes()),
                            eos=eos, time=0)
-    current_state = make_fluid_state(current_cv, gas_model, init_temperature)
-    current_state = thaw(freeze(current_state, actx), actx)
+    smoothness = 0.*current_cv.mass
+    current_state = force_evaluation(actx,
+        make_fluid_state(current_cv, gas_model, init_temperature, smoothness))
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     def my_write_viz(step, t, cv, dv):
 
@@ -1125,8 +1128,8 @@ def main(ctx_factory=cl.create_some_context, user_input_file=None,
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
-                      step=step, t=t, overwrite=True)
+        write_visfile(dcoll=dcoll, io_fields=viz_fields, visualizer=visualizer,
+                      vizname=vizname, comm=comm, step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)

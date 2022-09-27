@@ -73,29 +73,20 @@ for n in iter:
     # camera location (x, y, zoom)
     camera = [0.6, 0.01, 0.060]
     pixels = [1400,200]
-
-    simpleSlice(dir, n, 'cv_mass', 0.01, 1.0, camera, invert=1, logScale=1,
-      colorScheme='erdc_rainbow_dark', prefix=prefix, pixels=pixels, cbTitle='Density [kg/m^3]')
+    simpleSlice(dir, n, 'cv_mass', 0.01, 0.1, camera, invert=1, logScale=1,
+      colorScheme='cool to warm', prefix=prefix, pixels=pixels, cbTitle='Density [kg/m^3]')
 
     simpleSlice(dir, n, 'dv_pressure', 1000.0, 10000, camera, invert=1,
-      colorScheme='GREEN-WHITE_LINEAR', prefix=prefix, pixels=pixels, cbTitle='Pressure [Pa]')
+      colorScheme='Viridis (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Pressure [Pa]')
 
-    simpleSlice(dir, n, 'dv_temperature', 200.0, 2000, camera, invert=0,
+    simpleSlice(dir, n, 'dv_temperature', 200.0, 1000, camera, invert=0,
       colorScheme='Black-Body Radiation', prefix=prefix, pixels=pixels, cbTitle='Temperature [K]')
 
     simpleSlice(dir, n, 'mach', 0.0, 3.5, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='Mach Number')
+      colorScheme='Inferno (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Mach Number')
 
-    simpleSlice(dir, n, 'alpha', 0.0001, 0.1, camera, invert=0,
-      colorScheme='Blue Orange (divergent)', prefix=prefix, pixels=pixels, cbTitle='Artifical Viscosity (m^2/s)')
-
-    simpleSlice(dir, n, 'tagged_cells', 0.0, 1.0, camera, invert=0,
-      colorScheme='erdc_marine2gold_BW', prefix=prefix, pixels=pixels, cbTitle='Tagged Elements')
-
-    #imaskedSlice(dir,n,'Z',0.0,0.272,camera,func='(3.4219*C2H4/rho - O2/rho + 0.54)/(3.4219*1.0 + 0.54)',
-      #colorScheme='GyRd',prefix=prefix,pixels=pixels,cbTitle='Mixture fraction')
-    #imaskedSlice(dir,n,'speed',0.0,800.0,camera,func='(velocity-1^2 + velocity-2^2 + velocity-3^2)^(0.5)',
-      #colorScheme='Grayscale',prefix=prefix,pixels=pixels,cbTitle='Velocity magnitude [m/s]')
+    simpleSlice(dir, n, 'mu', 0.0001, 0.1, camera, invert=0,
+      colorScheme='Viridis (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='viscosity (m^2/s)')
   elif (prefix == 'y2-cavity'): # Upstream arc-heater, full geometry
     # camera location (x, y, zoom)
     # camera location (bigger moves right, bigger moves up , smaller to zoom in)
@@ -126,28 +117,25 @@ for n in iter:
     pixels = [1300,700]
 
     simpleSlice(dir, n, 'cv_mass', 0.02, 0.1, camera, invert=1, logScale=1,
-      colorScheme='erdc_rainbow_dark', prefix=prefix, pixels=pixels, cbTitle='Density [kg/m^3]')
+      colorScheme='cool to warm', prefix=prefix, pixels=pixels, cbTitle='Density [kg/m^3]')
 
     simpleSlice(dir, n, 'dv_pressure', 1500.0, 10000, camera, invert=1,
-      colorScheme='GREEN-WHITE_LINEAR', prefix=prefix, pixels=pixels, cbTitle='Pressure [Pa]')
+      colorScheme='Viridis (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Pressure [Pa]')
 
     simpleSlice(dir, n, 'dv_temperature', 200.0, 1000, camera, invert=0,
       colorScheme='Black-Body Radiation', prefix=prefix, pixels=pixels, cbTitle='Temperature [K]')
 
     simpleSlice(dir, n, 'mach', 0.0, 3.5, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='Mach Number')
+      colorScheme='Inferno (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Mach Number')
 
-    simpleSlice(dir, n, 'alpha', 0.0001, 0.1, camera, invert=0,
-      colorScheme='Blue Orange (divergent)', prefix=prefix, pixels=pixels, cbTitle='artifical viscosity (m^2/s)')
-
-    simpleSlice(dir, n, 'tagged_cells', 0.0, 1.0, camera, invert=0,
-      colorScheme='erdc_marine2gold_BW', prefix=prefix, pixels=pixels, cbTitle='Tagged Elements')
+    simpleSlice(dir, n, 'mu', 0.0001, 0.1, camera, invert=0,
+      colorScheme='Viridis (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='viscosity (m^2/s)')
 
     simpleSlice(dir, n, 'Y_air', 0.0, 1.0, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='Air Mass Fraction')
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Air Mass Fraction')
 
     simpleSlice(dir, n, 'Y_fuel', 0.0, 1.0, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='Fuel Mass Fraction')
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Fuel Mass Fraction')
   elif (prefix == 'y2-cavity-multi'): # Upstream arc-heater, full geometry
     # camera location (x, y, zoom)
     # camera location (bigger moves right, bigger moves up , smaller to zoom in)
@@ -155,37 +143,38 @@ for n in iter:
     pixels = [1300,700]
 
     simpleSlice(dir, n, 'cv_mass', 0.02, 0.1, camera, invert=1, logScale=1,
-      colorScheme='erdc_rainbow_dark', prefix=prefix, pixels=pixels, cbTitle='Density [kg/m^3]')
+      colorScheme='cool to warm', prefix=prefix, pixels=pixels, cbTitle='Density [kg/m^3]')
 
     simpleSlice(dir, n, 'dv_pressure', 1500.0, 10000, camera, invert=1,
-      colorScheme='GREEN-WHITE_LINEAR', prefix=prefix, pixels=pixels, cbTitle='Pressure [Pa]')
+      colorScheme='Viridis (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Pressure [Pa]')
 
-    simpleSlice(dir, n, 'dv_temperature', 200.0, 1000, camera, invert=0,
+    simpleSlice(dir, n, 'dv_temperature', 200.0, 2500, camera, invert=0,
       colorScheme='Black-Body Radiation', prefix=prefix, pixels=pixels, cbTitle='Temperature [K]')
 
     simpleSlice(dir, n, 'mach', 0.0, 3.5, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='Mach Number')
+      colorScheme='Inferno (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Mach Number')
 
-    simpleSlice(dir, n, 'alpha', 0.0001, 0.1, camera, invert=0,
-      colorScheme='Blue Orange (divergent)', prefix=prefix, pixels=pixels, cbTitle='artifical viscosity (m^2/s)')
-
-    simpleSlice(dir, n, 'tagged_cells', 0.0, 1.0, camera, invert=0,
-      colorScheme='erdc_marine2gold_BW', prefix=prefix, pixels=pixels, cbTitle='Tagged Elements')
+    simpleSlice(dir, n, 'mu', 0.0001, 0.1, camera, invert=0,
+      colorScheme='Viridis (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='viscosity (m^2/s)')
 
     simpleSlice(dir, n, 'Y_O2', 0.0, 1.0, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='Air Mass Fraction')
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Air Mass Fraction')
 
     simpleSlice(dir, n, 'Y_C2H4', 0.0, 1.0, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='C2H4 Mass Fraction')
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Fuel Mass Fraction')
 
-    simpleSlice(dir, n, 'Y_H2', 0.0, 1.0, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='H2 Mass Fraction')
+    simpleSlice(dir, n, 'Y_CO', 0.0, 1.0, camera, invert=0,
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Fuel Mass Fraction')
 
     simpleSlice(dir, n, 'Y_H2O', 0.0, 1.0, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='H2O Mass Fraction')
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Fuel Mass Fraction')
 
-    simpleSlice(dir, n, 'Y_CO', 0.0, 0.3, camera, invert=0,
-      colorScheme='Rainbow Desaturated', prefix=prefix, pixels=pixels, cbTitle='CO Mass Fraction')
+    simpleSlice(dir, n, 'Y_CO2', 0.0, 1.0, camera, invert=0,
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Fuel Mass Fraction')
+
+    simpleSlice(dir, n, 'Y_H2', 0.0, 1.0, camera, invert=0,
+      colorScheme='Plasma (matplotlib)', prefix=prefix, pixels=pixels, cbTitle='Fuel Mass Fraction')
+
   else:
     print('Unrecognized prefix: {}'.format(prefix))
 

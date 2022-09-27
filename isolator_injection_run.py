@@ -33,18 +33,16 @@ import pyopencl.array as cla  # noqa
 from functools import partial
 from pytools.obj_array import make_obj_array
 
-from arraycontext import thaw, freeze
+from mirgecom.discretization import create_discretization_collection
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
-from grudge.dof_desc import DTAG_BOUNDARY
+from grudge.dof_desc import BoundaryDomainTag
 #from grudge.op import nodal_max, nodal_min
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
     initialize_logmgr,
     logmgr_add_cl_device_info,
     logmgr_set_time,
-    logmgr_add_device_name,
     logmgr_add_device_memory_usage,
 )
 
@@ -62,22 +60,30 @@ from mirgecom.simutil import (
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
-import pyopencl.tools as cl_tools
 from mirgecom.integrators import (rk4_step, lsrk54_step, lsrk144_step,
                                   euler_step)
+from mirgecom.inviscid import (inviscid_facial_flux_rusanov,
+                               inviscid_facial_flux_hll)
 from grudge.shortcuts import compiled_lsrk45_step
 
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedFluidBoundary,
     IsothermalWallBoundary,
+    DummyBoundary,
     SymmetryBoundary
 )
 from mirgecom.eos import IdealSingleGas, PyrometheusMixture
-from mirgecom.transport import SimpleTransport
+from mirgecom.transport import (SimpleTransport,
+                                PowerLawTransport,
+                                ArtificialViscosityTransport,
+                                ArtificialViscosityTransportDiv)
 from mirgecom.gas_model import GasModel, make_fluid_state
 from mirgecom.fluid import make_conserved
 from mirgecom.limiter import bound_preserving_limiter
+from mirgecom.gas_model import make_operator_fluid_states
+from mirgecom.navierstokes import grad_cv_operator
+#from dataclasses import replace
 
 
 class SingleLevelFilter(logging.Filter):
@@ -99,6 +105,114 @@ class MyRuntimeError(RuntimeError):
     """Simple exception to kill the simulation."""
 
     pass
+
+
+class HeatSource:
+    r"""Deposit energy from an ignition source."
+
+    Internal energy is deposited as a gaussian of the form:
+
+    .. math::
+
+        e &= e + e_{a}\exp^{(1-r^{2})}\\
+
+    Density if modified to keep pressure constant, according to the eos
+
+    .. automethod:: __init__
+    .. automethod:: __call__
+    """
+
+    def __init__(self, *, dim, center=None, width=1.0,
+                 amplitude=0., amplitude_func=None):
+        r"""Initialize the spark parameters.
+
+        Parameters
+        ----------
+        center: numpy.ndarray
+            center of source
+        amplitude: float
+            source strength modifier
+        amplitude_fun: function
+            variation of amplitude with time
+        """
+        if center is None:
+            center = np.zeros(shape=(dim,))
+        self._center = center
+        self._dim = dim
+        self._amplitude = amplitude
+        self._width = width
+        self._amplitude_func = amplitude_func
+
+    def __call__(self, x_vec, state, eos, time, **kwargs):
+        """
+        Create the energy deposition at time *t* and location *x_vec*.
+
+        the source at time *t* is created by evaluting the gaussian
+        with time-dependent amplitude at *t*.
+
+        If modify density is true, only adjust the temperature. Pressure
+        is maintained by adjusting the density.
+
+        Parameters
+        ----------
+        cv: :class:`mirgecom.fluid.ConservedVars`
+            Fluid conserved quantities
+        time: float
+            Current time at which the solution is desired
+        x_vec: numpy.ndarray
+            Nodal coordinates
+        """
+        t = time
+        if self._amplitude_func is not None:
+            amplitude = self._amplitude*self._amplitude_func(t)
+        else:
+            amplitude = self._amplitude
+
+        loc = self._center
+
+        # coordinates relative to lump center
+        rel_center = make_obj_array(
+            [x_vec[i] - loc[i] for i in range(self._dim)]
+        )
+        actx = x_vec[0].array_context
+        r = actx.np.sqrt(np.dot(rel_center, rel_center))
+        expterm = amplitude * actx.np.exp(-(r**2)/(2*self._width*self._width))
+
+        # elevate the local temperature
+        temperature = state.temperature + expterm
+        pressure = state.pressure
+        y = state.species_mass_fractions
+
+        # density of this new state
+        new_mass = eos.get_density(pressure=pressure, temperature=temperature,
+                               species_mass_fractions=y)
+        new_internal_energy = eos.get_internal_energy(temperature=temperature,
+                                                  species_mass_fractions=y)
+
+        # change the density so the pressure stays constant
+        mass_source = state.mass_density - new_mass
+
+        # keep the velocity constant
+        momentum_source = state.velocity*mass_source
+
+        # keep the mass fractions constant
+        species_mass_source = state.species_mass_fractions*mass_source
+
+        # the source term that keeps the energy constant having changed the mass
+        energy_source = state.energy_density/state.mass_density*mass_source
+
+        # the source term that raises the temperature only (internal energy)
+        internal_energy_source = (((state.energy_density
+             - np.dot(state.momentum_density, state.momentum_density) /
+             (2.0*state.mass_density)) /
+            state.mass_density) - new_internal_energy)
+
+        energy_source += internal_energy_source*mass_source
+
+        return make_conserved(dim=self._dim, mass=mass_source,
+                              energy=energy_source,
+                              momentum=momentum_source,
+                              species_mass=species_mass_source)
 
 
 class SparkSource:
@@ -135,17 +249,20 @@ class SparkSource:
         self._width = width
         self._amplitude_func = amplitude_func
 
-    def __call__(self, x_vec, cv, time, **kwargs):
+    def __call__(self, x_vec, state, eos, time, **kwargs):
         """
         Create the energy deposition at time *t* and location *x_vec*.
 
         the source at time *t* is created by evaluting the gaussian
         with time-dependent amplitude at *t*.
 
+        If modify density is true, only adjust the temperature. Pressure
+        is maintained by adjusting the density.
+
         Parameters
         ----------
-        cv: :class:`mirgecom.fluid.ConservedVars`
-            Fluid conserved quantities
+        state: :class:`mirgecom.GasModle.FluidState`
+            Fluid state
         time: float
             Current time at which the solution is desired
         x_vec: numpy.ndarray
@@ -157,8 +274,6 @@ class SparkSource:
         else:
             amplitude = self._amplitude
 
-        #print(f"{time=} {amplitude=}")
-
         loc = self._center
 
         # coordinates relative to lump center
@@ -169,11 +284,11 @@ class SparkSource:
         r = actx.np.sqrt(np.dot(rel_center, rel_center))
         expterm = amplitude * actx.np.exp(-(r**2)/(2*self._width*self._width))
 
-        mass = 0*cv.mass
-        momentum = 0*cv.momentum
-        species_mass = 0*cv.species_mass
+        mass = 0.*state.mass_density
+        momentum = 0.*state.momentum_density
+        species_mass = 0.*state.species_mass_density
 
-        energy = cv.energy + cv.mass*expterm
+        energy = state.energy_density + state.mass_density*expterm
 
         return make_conserved(dim=self._dim, mass=mass, energy=energy,
                               momentum=momentum, species_mass=species_mass)
@@ -290,14 +405,13 @@ def main(ctx_factory=cl.create_some_context,
         queue = cl.CommandQueue(cl_ctx)
 
     # main array context for the simulation
+    from mirgecom.simutil import get_reasonable_memory_pool
+    alloc = get_reasonable_memory_pool(cl_ctx, queue)
+
     if lazy:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                mpi_base_tag=12000)
+        actx = actx_class(comm, queue, mpi_base_tag=12000, allocator=alloc)
     else:
-        actx = actx_class(comm, queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-                force_device_scalars=True)
+        actx = actx_class(comm, queue, allocator=alloc, force_device_scalars=True)
 
     # default i/o junk frequencies
     nviz = 500
@@ -330,6 +444,7 @@ def main(ctx_factory=cl.create_some_context,
     s0_sc = -5.0
     kappa_sc = 0.5
     dim = 2
+    inv_num_flux = "rusanov"
 
     # material properties
     mu = 1.0e-5
@@ -338,25 +453,33 @@ def main(ctx_factory=cl.create_some_context,
     nspecies = 0
     pyro_temp_iter = 3  # for pyrometheus, number of newton iterations
     pyro_temp_tol = 1.e-4  # for pyrometheus, toleranace for temperature residual
+    transport_type = 0
 
     # rhs control
-    use_ignition = False
+    use_ignition = 0
     use_sponge = True
-    use_av = True
     use_combustion = True
+
+    # artificial viscosity control
+    #    0 - none
+    #    1 - laplacian diffusion
+    #    2 - physical viscosity based, rho indicator
+    #    3 - physical viscosity based, div(velocity) indicator
+    use_av = 0
 
     sponge_sigma = 1.0
     vel_sigma_inj = 5000
 
     # initialize the ignition spark
     spark_center = np.zeros(shape=(dim,))
-    spark_center[0] = 0.677
-    spark_center[1] = -0.021
+    spark_init_loc_x = 0.677
+    spark_init_loc_y = -0.021
     if dim == 3:
         spark_center[2] = 0.035/2.
     spark_diameter = 0.0025
 
-    spark_strength = 30000000./current_dt
+    #spark_strength = 30000000./current_dt
+    spark_strength = 20000000./current_dt
     #spark_strength = 5e-3
 
     spark_init_time = 999999999.
@@ -423,6 +546,10 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
+            transport_type = int(input_data["transport"])
+        except KeyError:
+            pass
+        try:
             pyro_temp_iter = int(input_data["pyro_temp_iter"])
         except KeyError:
             pass
@@ -440,6 +567,10 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             integrator = input_data["integrator"]
+        except KeyError:
+            pass
+        try:
+            inv_num_flux = input_data["inviscid_numerical_flux"]
         except KeyError:
             pass
         try:
@@ -467,11 +598,19 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
-            use_ignition = bool(input_data["use_ignition"])
+            use_ignition = int(input_data["use_ignition"])
         except KeyError:
             pass
         try:
             spark_init_time = float(input_data["ignition_init_time"])
+        except KeyError:
+            pass
+        try:
+            spark_init_loc_x = float(input_data["ignition_loc_x"])
+        except KeyError:
+            pass
+        try:
+            spark_init_loc_y = float(input_data["ignition_loc_y"])
         except KeyError:
             pass
         try:
@@ -483,7 +622,7 @@ def main(ctx_factory=cl.create_some_context,
         except KeyError:
             pass
         try:
-            use_av = bool(input_data["use_av"])
+            use_av = int(input_data["use_av"])
         except KeyError:
             pass
         try:
@@ -501,14 +640,44 @@ def main(ctx_factory=cl.create_some_context,
         error_message = "Invalid time integrator: {}".format(integrator)
         raise RuntimeError(error_message)
 
+    allowed_inv_num_flux = ["rusanov", "hll"]
+    if inv_num_flux not in allowed_inv_num_flux:
+        error_message = "Invalid inviscid flux function: {}".format(inv_num_flux)
+        raise RuntimeError(error_message)
+
     if integrator == "compiled_lsrk54":
         print("Setting force_eval = False for pre-compiled time integration")
         force_eval = False
 
     s0_sc = np.log10(1.0e-4 / np.power(order, 4))
+
+    # use_av=3 specific parameters
+    # flow stagnation temperature
+    static_temp = 2076.43
+    # steepness of the smoothed function
+    theta_sc = 100
+    # cutoff, smoothness below this value is ignored
+    beta_sc = 0.01
+    gamma_sc = 1.5
+
     if rank == 0:
-        print(f"Shock capturing parameters: alpha {alpha_sc}, "
-              f"s0 {s0_sc}, kappa {kappa_sc}")
+        if use_av == 0:
+            print("Artificial viscosity disabled")
+        elif use_av == 1:
+            print("Artificial viscosity using laplacian diffusion")
+            print(f"Shock capturing parameters: alpha {alpha_sc}, "
+                  f"s0 {s0_sc}, kappa {kappa_sc}")
+        elif use_av == 2:
+            print("Artificial viscosity using modified physical viscosity")
+            print(f"Shock capturing parameters: alpha {alpha_sc}, "
+                  f"s0 {s0_sc}, Pr 0.75")
+        elif use_av == 3:
+            print("Artificial viscosity using modified physical viscosity")
+            print("Using velocity divergence indicator")
+            print(f"Shock capturing parameters: alpha {alpha_sc}, "
+                  f"gamma_sc {gamma_sc}"
+                  f"theta_sc {theta_sc}, beta_sc {beta_sc}, Pr 0.75, "
+                  f"stagnation temperature {static_temp}")
 
     if rank == 0:
         print("\n#### Simluation control data: ####")
@@ -523,7 +692,9 @@ def main(ctx_factory=cl.create_some_context,
         print(f"\tTime integration {integrator}")
         print("#### Simluation control data: ####\n")
 
-    if rank == 0 and use_ignition:
+    spark_center[0] = spark_init_loc_x
+    spark_center[1] = spark_init_loc_y
+    if rank == 0:
         print("\n#### Ignition control parameters ####")
         print(f"spark center ({spark_center[0]},{spark_center[1]})")
         print(f"spark FWHM {spark_diameter}")
@@ -531,6 +702,10 @@ def main(ctx_factory=cl.create_some_context,
         print(f"ignition time {spark_init_time}")
         print(f"ignition duration {spark_duration}")
         print("#### Ignition control parameters ####\n")
+        if use_ignition == 1:
+            print("spark ignition")
+        elif use_ignition == 2:
+            print("heat source ignition")
 
     def _compiled_stepper_wrapper(state, t, dt, rhs):
         return compiled_lsrk45_step(actx, state, t, dt, rhs)
@@ -544,6 +719,11 @@ def main(ctx_factory=cl.create_some_context,
         timestepper = lsrk144_step
     if integrator == "compiled_lsrk54":
         timestepper = _compiled_stepper_wrapper
+
+    if inv_num_flux == "rusanov":
+        inviscid_numerical_flux_func = inviscid_facial_flux_rusanov
+    if inv_num_flux == "hll":
+        inviscid_numerical_flux_func = inviscid_facial_flux_hll
 
     # }}}
     # working gas: O2/N2 #
@@ -576,17 +756,21 @@ def main(ctx_factory=cl.create_some_context,
     if nspecies == 0:
         nlimit = 0
 
+    limit_species = False
+    if nlimit > 0:
+        species_limit_sigma = 1./nlimit/current_dt
+        limit_species = True
+    else:
+        species_limit_sigma = 0.
+
     # Turn off combustion unless EOS supports it
     if nspecies < 3:
         use_combustion = False
 
     if rank == 0:
         print("\n#### Simluation material properties: ####")
-        print(f"\tmu = {mu}")
-        print(f"\tkappa = {kappa}")
         print(f"\tPrandtl Number  = {Pr}")
         print(f"\tnspecies = {nspecies}")
-        print(f"\tspecies diffusivity = {spec_diff}")
         if nspecies == 0:
             print("\tno passive scalars, uniform ideal gas eos")
         elif nspecies == 2:
@@ -594,13 +778,57 @@ def main(ctx_factory=cl.create_some_context,
         else:
             print("\tfull multi-species initialization with pyrometheus eos")
         if nlimit > 0:
-            print(f"\nSpecies mass fractions limited to [0:1] every {nlimit} steps")
+            print(f"\tSpecies mass fractions limited to [0:1] over {nlimit} steps")
 
-    #spec_diffusivity = 0. * np.ones(nspecies)
+        transport_alpha = 0.6
+        transport_beta = 4.093e-7
+        transport_sigma = 2.0
+        transport_n = 0.666
+
+        if transport_type == 0:
+            print("\t Simple transport model:")
+            print("\t\t constant viscosity, species diffusivity")
+            print(f"\tmu = {mu}")
+            print(f"\tkappa = {kappa}")
+            print(f"\tspecies diffusivity = {spec_diff}")
+        elif transport_type == 1:
+            print("\t Power law transport model:")
+            print("\t\t temperature dependent viscosity, species diffusivity")
+            print(f"\ttransport_alpha = {transport_alpha}")
+            print(f"\ttransport_beta = {transport_beta}")
+            print(f"\ttransport_sigma = {transport_sigma}")
+            print(f"\ttransport_n = {transport_n}")
+            print(f"\tspecies diffusivity = {spec_diff}")
+        elif transport_type == 2:
+            print("\t Pyrometheus transport model:")
+            print("\t\t temperature/mass fraction dependence")
+        else:
+            error_message = "Unknown transport_type {}".format(transport_type)
+            raise RuntimeError(error_message)
+
     spec_diffusivity = spec_diff * np.ones(nspecies)
-    transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
-                                      species_diffusivity=spec_diffusivity)
+    if transport_type == 0:
+        physical_transport_model = SimpleTransport(
+            viscosity=mu, thermal_conductivity=kappa,
+            species_diffusivity=spec_diffusivity)
+    if transport_type == 1:
+        physical_transport_model = PowerLawTransport(
+            alpha=transport_alpha, beta=transport_beta,
+            sigma=transport_sigma, n=transport_n,
+            species_diffusivity=spec_diffusivity)
 
+    if use_av == 0 or use_av == 1:
+        transport_model = physical_transport_model
+    elif use_av == 2:
+        transport_model = ArtificialViscosityTransport(
+            physical_transport=physical_transport_model,
+            av_mu=alpha_sc, av_prandtl=0.75)
+    elif use_av == 3:
+        transport_model = ArtificialViscosityTransportDiv(
+            physical_transport=physical_transport_model,
+            av_mu=alpha_sc, av_prandtl=0.75)
+
+    chem_source_tol = 1.e-10
     # make the eos
     if nspecies < 3:
         eos = IdealSingleGas(gamma=gamma, gas_const=r)
@@ -609,9 +837,75 @@ def main(ctx_factory=cl.create_some_context,
         from mirgecom.thermochemistry import get_pyrometheus_wrapper_class
         from uiuc import Thermochemistry
         pyro_mech = get_pyrometheus_wrapper_class(
-            pyro_class=Thermochemistry, temperature_niter=pyro_temp_iter)(actx.np)
+            pyro_class=Thermochemistry, temperature_niter=pyro_temp_iter,
+            zero_level=chem_source_tol)(actx.np)
         eos = PyrometheusMixture(pyro_mech, temperature_guess=init_temperature)
         species_names = pyro_mech.species_names
+
+        # find name species indicies
+        for i in range(nspecies):
+            if species_names[i] == "H2":
+                i_h2 = i
+            """
+            if species_names[i] == "C2H4":
+                i_c2h4 = i
+            if species_names[i] == "O2":
+                i_ox = i
+            if species_names[i] == "N2":
+                i_di = i
+            """
+
+    transport_alpha = 0.6
+    transport_beta = 4.093e-7
+    transport_sigma = 2.0
+    transport_n = 0.666
+    transport_lewis = np.ones(nspecies)
+    transport_lewis[i_h2] = 0.2
+
+    if rank == 0:
+        if transport_type == 0:
+            print("\t Simple transport model:")
+            print("\t\t constant viscosity, species diffusivity")
+            print(f"\tmu = {mu}")
+            print(f"\tkappa = {kappa}")
+            print(f"\tspecies diffusivity = {spec_diff}")
+        elif transport_type == 1:
+            print("\t Power law transport model:")
+            print("\t\t temperature dependent viscosity, species diffusivity")
+            print(f"\ttransport_alpha = {transport_alpha}")
+            print(f"\ttransport_beta = {transport_beta}")
+            print(f"\ttransport_sigma = {transport_sigma}")
+            print(f"\ttransport_n = {transport_n}")
+            print(f"\tLewis Number = {transport_lewis}")
+        elif transport_type == 2:
+            print("\t Pyrometheus transport model:")
+            print("\t\t temperature/mass fraction dependence")
+        else:
+            error_message = "Unknown transport_type {}".format(transport_type)
+            raise RuntimeError(error_message)
+
+    spec_diffusivity = spec_diff * np.ones(nspecies)
+    if transport_type == 0:
+        physical_transport_model = SimpleTransport(
+            viscosity=mu, thermal_conductivity=kappa,
+            species_diffusivity=spec_diffusivity)
+    if transport_type == 1:
+        physical_transport_model = PowerLawTransport(
+            alpha=transport_alpha, beta=transport_beta,
+            sigma=transport_sigma, n=transport_n,
+            species_diffusivity=spec_diffusivity,
+            lewis=transport_lewis)
+
+    if use_av == 0 or use_av == 1:
+        transport_model = physical_transport_model
+    elif use_av == 2:
+        transport_model = ArtificialViscosityTransport(
+            physical_transport=physical_transport_model,
+            av_mu=alpha_sc, av_prandtl=0.75)
+    elif use_av == 3:
+        transport_model = ArtificialViscosityTransportDiv(
+            physical_transport=physical_transport_model,
+            av_mu=alpha_sc, av_prandtl=0.75)
 
     gas_model = GasModel(eos=eos, transport=transport_model)
 
@@ -658,20 +952,10 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logging.info("Making discretization")
 
-    from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
-    from meshmode.discretization.poly_element import \
-          default_simplex_group_factory, QuadratureSimplexGroupFactory
+    dcoll = create_discretization_collection(
+        actx, volume_meshes=local_mesh, order=order)
 
-    discr = EagerDGDiscretization(
-        actx, local_mesh,
-        discr_tag_to_group_factory={
-            DISCR_TAG_BASE: default_simplex_group_factory(
-                base_dim=local_mesh.dim, order=order),
-            DISCR_TAG_QUAD: QuadratureSimplexGroupFactory(2*order + 1)
-        },
-        mpi_communicator=comm
-    )
-
+    from grudge.dof_desc import DISCR_TAG_QUAD
     if use_overintegration:
         quadrature_tag = DISCR_TAG_QUAD
     else:
@@ -684,7 +968,6 @@ def main(ctx_factory=cl.create_some_context,
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
-        logmgr_add_device_name(logmgr, queue)
         logmgr_add_device_memory_usage(logmgr, queue)
 
         logmgr.add_watches([
@@ -715,9 +998,10 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logging.info("Before restart/init")
 
-    def get_fluid_state(cv, temperature_seed):
+    def get_fluid_state(cv, temperature_seed, smoothness=None):
         return make_fluid_state(cv=cv, gas_model=gas_model,
-                                temperature_seed=temperature_seed)
+                                temperature_seed=temperature_seed,
+                                smoothness=smoothness)
 
     create_fluid_state = actx.compile(get_fluid_state)
 
@@ -729,22 +1013,70 @@ def main(ctx_factory=cl.create_some_context,
 
     get_temperature_update_compiled = actx.compile(get_temperature_update)
 
+    from grudge.dt_utils import characteristic_lengthscales
+    length_scales = characteristic_lengthscales(actx, dcoll)
+
+    # use dummy boundaries to setup the smoothness state for the target
+    target_boundaries = {
+        BoundaryDomainTag("flow"): DummyBoundary(),
+        BoundaryDomainTag("wall"): IsothermalWallBoundary()
+    }
+
+    # compiled wrapper for grad_cv_operator
+    def _grad_cv_operator(fluid_state, time):
+        return grad_cv_operator(dcoll=dcoll, gas_model=gas_model,
+                                boundaries=boundaries,
+                                state=fluid_state,
+                                time=time,
+                                quadrature_tag=quadrature_tag)
+
+    grad_cv_operator_compiled = actx.compile(_grad_cv_operator) # noqa
+
+    def _grad_cv_operator_target(fluid_state, time):
+        return grad_cv_operator(dcoll=dcoll, gas_model=gas_model,
+                                boundaries=target_boundaries,
+                                state=fluid_state,
+                                time=time,
+                                quadrature_tag=quadrature_tag)
+
+    grad_cv_operator_target_compiled = actx.compile(_grad_cv_operator_target) # noqa
+
+    def compute_smoothness(cv, dv, grad_cv):
+
+        from mirgecom.fluid import velocity_gradient
+        div_v = np.trace(velocity_gradient(cv, grad_cv))
+
+        gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
+        r = gas_model.eos.gas_const(cv)
+        c_star = actx.np.sqrt(gamma*r*(2/(gamma+1)*static_temp))
+        indicator = -gamma_sc*length_scales*div_v/c_star
+
+        smoothness = actx.np.log(
+            1 + actx.np.exp(theta_sc*(indicator - beta_sc)))/theta_sc
+        return smoothness*gamma_sc*length_scales
+
+    compute_smoothness_compiled = actx.compile(compute_smoothness) # noqa
+
+    def _smoothness_indicator(cv):
+
+        return smoothness_indicator(dcoll, cv.mass,
+                                    kappa=kappa_sc, s0=s0_sc)
+
+    smoothness_indicator_compiled = actx.compile(_smoothness_indicator)
+
     if restart_filename:
         if rank == 0:
             logging.info("Restarting soln.")
         restart_cv = restart_data["cv"]
         temperature_seed = restart_data["temperature_seed"]
         if restart_order != order:
-            restart_discr = EagerDGDiscretization(
-                actx,
-                local_mesh,
-                order=restart_order,
-                mpi_communicator=comm)
+            restart_dcoll = create_discretization_collection(
+                actx, local_mesh, order=restart_order)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
-                discr.discr_from_dd("vol"),
-                restart_discr.discr_from_dd("vol")
+                dcoll.discr_from_dd("vol"),
+                restart_dcoll.discr_from_dd("vol")
             )
             restart_cv = connection(restart_data["cv"])
             temperature_seed = connection(restart_data["temperature_seed"])
@@ -760,16 +1092,13 @@ def main(ctx_factory=cl.create_some_context,
             logging.info("Reading target soln.")
         target_cv = target_data["cv"]
         if target_order != order:
-            target_discr = EagerDGDiscretization(
-                actx,
-                local_mesh,
-                order=target_order,
-                mpi_communicator=comm)
+            target_dcoll = create_discretization_collection(
+                actx, local_mesh, order=target_order)
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
-                discr.discr_from_dd("vol"),
-                target_discr.discr_from_dd("vol")
+                dcoll.discr_from_dd("vol"),
+                target_dcoll.discr_from_dd("vol")
             )
             target_cv = connection(target_data["cv"])
 
@@ -778,9 +1107,39 @@ def main(ctx_factory=cl.create_some_context,
     else:
         target_cv = restart_cv
 
-    current_state = create_fluid_state(restart_cv, temperature_seed)
-    target_state = create_fluid_state(target_cv, temperature_seed)
-    temperature_seed = current_state.temperature
+    no_smoothness = force_evaluation(actx, 0.*restart_cv.mass)
+    smoothness = no_smoothness
+    target_smoothness = smoothness
+    if use_av == 1 or use_av == 2:
+        smoothness = smoothness_indicator_compiled(restart_cv)
+        target_smoothness = smoothness_indicator_compiled(target_cv)
+
+    current_state = create_fluid_state(restart_cv, temperature_seed,
+                                     smoothness=smoothness)
+    target_state = create_fluid_state(target_cv, temperature_seed,
+                                    smoothness=target_smoothness)
+
+    if use_av == 3:
+        target_grad_cv = grad_cv_operator_target_compiled(
+            target_state, time=0.)
+        target_smoothness = compute_smoothness_compiled(
+            cv=target_cv, dv=target_state.dv, grad_cv=target_grad_cv)
+
+        target_state = create_fluid_state(cv=target_cv,
+                                        temperature_seed=temperature_seed,
+                                        smoothness=target_smoothness)
+
+        """
+        # This should be equivalent and faster?
+        # But the compilation is super slow
+        # and doesn't work in parallel?
+        # avoid recomputation of temperature
+        new_dv = replace(target_state.dv, smoothness=target_smoothness)
+        target_state = replace(target_state, dv=new_dv)
+        new_tv = gas_model.transport.transport_vars(
+            cv=target_cv, dv=new_dv, eos=gas_model.eos)
+        target_state = replace(target_state, tv=new_tv)
+        """
 
     # if you divide by 2.355, 50% of the spark is within this diameter
     spark_diameter /= 2.355
@@ -793,11 +1152,16 @@ def main(ctx_factory=cl.create_some_context,
                               (2*spark_duration*spark_duration))
         return expterm
 
-    #spark_strength = 0.0
-    ignition_source = SparkSource(dim=dim, center=spark_center,
-                                  amplitude=spark_strength,
-                                  amplitude_func=spark_time_func,
-                                  width=spark_diameter)
+    if use_ignition == 2:
+        ignition_source = HeatSource(dim=dim, center=spark_center,
+                                      amplitude=spark_strength,
+                                      amplitude_func=spark_time_func,
+                                      width=spark_diameter)
+    else:
+        ignition_source = SparkSource(dim=dim, center=spark_center,
+                                      amplitude=spark_strength,
+                                      amplitude_func=spark_time_func,
+                                      width=spark_diameter)
 
     # initialize the sponge field
     sponge_thickness = 0.09
@@ -806,7 +1170,7 @@ def main(ctx_factory=cl.create_some_context,
 
     sponge_init = InitSponge(x0=sponge_x0, thickness=sponge_thickness,
                              amplitude=sponge_amp)
-    x_vec = thaw(discr.nodes(), actx)
+    x_vec = actx.thaw(dcoll.nodes())
 
     def _sponge_sigma(x_vec):
         return sponge_init(x_vec=x_vec)
@@ -819,20 +1183,20 @@ def main(ctx_factory=cl.create_some_context,
         return sponge_sigma*(current_state.cv - cv)
 
     from mirgecom.gas_model import project_fluid_state
-    from grudge.dof_desc import DOFDesc, as_dofdesc
-    dd_base_vol = DOFDesc("vol")
+    from grudge.dof_desc import DD_VOLUME_ALL, as_dofdesc
+    dd_base_vol = DD_VOLUME_ALL
 
-    def get_target_state_on_boundary(btag):
+    def get_target_state_on_boundary(dd_bdry):
         return project_fluid_state(
-            discr, dd_base_vol,
-            as_dofdesc(btag).with_discr_tag(quadrature_tag),
+            dcoll, dd_base_vol,
+            as_dofdesc(dd_bdry).with_discr_tag(quadrature_tag),
             target_state, gas_model
         )
 
     flow_ref_state = \
-        get_target_state_on_boundary(DTAG_BOUNDARY("flow"))
+        get_target_state_on_boundary(BoundaryDomainTag("flow"))
 
-    flow_ref_state = thaw(freeze(flow_ref_state, actx), actx)
+    flow_ref_state = force_evaluation(actx, flow_ref_state)
 
     def _target_flow_state_func(**kwargs):
         return flow_ref_state
@@ -844,21 +1208,21 @@ def main(ctx_factory=cl.create_some_context,
     slip_wall = SymmetryBoundary()
 
     boundaries = {
-        DTAG_BOUNDARY("flow"): flow_boundary,
-        DTAG_BOUNDARY("wall"): wall
+        BoundaryDomainTag("flow"): flow_boundary,
+        BoundaryDomainTag("wall"): wall
     }
     # allow for a slip boundary inside the injector
     if vel_sigma_inj == 0:
         boundaries = {
-            DTAG_BOUNDARY("flow"): flow_boundary,
-            DTAG_BOUNDARY("wall_without_injector"): wall,
-            DTAG_BOUNDARY("injector_wall"): slip_wall
+            BoundaryDomainTag("flow"): flow_boundary,
+            BoundaryDomainTag("wall_without_injector"): wall,
+            BoundaryDomainTag("injector_wall"): slip_wall
         }
 
     #from mirgecom.simutil import boundary_report
-    #boundary_report(discr, boundaries, f"{casename}_boundaries_np{nparts}.yaml")
+    #boundary_report(dcoll, boundaries, f"{casename}_boundaries_np{nparts}.yaml")
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     #    initname = initializer.__class__.__name__
     eosname = eos.__class__.__name__
@@ -871,34 +1235,29 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info(init_message)
 
-    from grudge.dt_utils import characteristic_lengthscales
-    length_scales = characteristic_lengthscales(actx, discr)
-
     # some utility functions
     def vol_min_loc(x):
         from grudge.op import nodal_min_loc
-        return actx.to_numpy(nodal_min_loc(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_min_loc(dcoll, "vol", x))[()]
 
     def vol_max_loc(x):
         from grudge.op import nodal_max_loc
-        return actx.to_numpy(nodal_max_loc(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_max_loc(dcoll, "vol", x))[()]
 
     def vol_min(x):
         from grudge.op import nodal_min
-        return actx.to_numpy(nodal_min(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_min(dcoll, "vol", x))[()]
 
     def vol_max(x):
         from grudge.op import nodal_max
-        return actx.to_numpy(nodal_max(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_max(dcoll, "vol", x))[()]
 
     def global_range_check(array, min_val, max_val):
         return global_reduce(
-            check_range_local(discr, "vol", array, min_val, max_val), op="lor")
+            check_range_local(dcoll, "vol", array, min_val, max_val), op="lor")
 
     def my_write_status(cv, dv, dt, cfl):
         status_msg = f"-------- dt = {dt:1.3e}, cfl = {cfl:1.4f}"
-        #temperature = thaw(freeze(dv.temperature, actx), actx)
-        #pressure = thaw(freeze(dv.pressure, actx), actx)
         p_min = vol_min(dv.pressure)
         p_max = vol_max(dv.pressure)
         t_min = vol_min(dv.temperature)
@@ -937,35 +1296,82 @@ def main(ctx_factory=cl.create_some_context,
         if rank == 0:
             logger.info(status_msg)
 
-    def my_write_viz(step, t, fluid_state, ts_field, alpha_field):
+    def get_production_rates(cv, temperature):
+        return eos.get_production_rates(cv, temperature)
+
+    compute_production_rates = actx.compile(get_production_rates)
+
+    def my_write_viz(step, t, fluid_state, ts_field, alpha_field, cv_limited):
 
         cv = fluid_state.cv
         dv = fluid_state.dv
+        mu = fluid_state.viscosity
 
-        tagged_cells = smoothness_indicator(discr, cv.mass, s0=s0_sc,
-                                            kappa=kappa_sc)
+        """
+        smoothness = dv.smoothness
+        indicator = no_smoothness
+        if use_av == 1:
+            smoothness = smoothness_indicator(dcoll, cv_limited).mass, s0=s0_sc,
+                                              kappa=kappa_sc)
+
+
+        fluid_state_limited = create_fluid_state(cv=cv_limited,
+                                                 smoothness=no_smoothness,
+                                                 temperature_seed=tseed)
+        grad_cv = grad_cv_operator(dcoll, gas_model, boundaries,
+                                   fluid_state_limited, time=current_t,
+                                   quadrature_tag=quadrature_tag)
+        from mirgecom.fluid import velocity_gradient
+        grad_v = velocity_gradient(cv, grad_cv)
+        div_v = np.trace(velocity_gradient(cv, grad_cv))
+
+        if use_av == 3:
+
+            gamma = gas_model.eos.gamma(cv=cv, temperature=dv.temperature)
+            r = gas_model.eos.gas_const(cv)
+            c_star = actx.np.sqrt(gamma*r*(2/(gamma+1)*static_temp))
+            #indicator = -alpha_sc*length_scales*actx.np.abs(div_v)/c_star
+            indicator = -alpha_sc*length_scales*div_v/c_star
+
+            # make a smoothness indicator
+            smoothness = compute_smoothness(cv_limited, dv, grad_cv)
+        """
 
         mach = (actx.np.sqrt(np.dot(cv.velocity, cv.velocity)) /
                             dv.speed_of_sound)
 
         viz_fields = [("cv", cv),
+                      ("cv_limited", cv_limited),
                       ("dv", dv),
                       ("mach", mach),
                       ("rank", rank),
                       ("velocity", cv.velocity),
+                      # ("grad_v_x", grad_v[0]),
+                      # ("grad_v_y", grad_v[1]),
+                      # ("div_v", div_v),
                       ("sponge_sigma", sponge_sigma),
                       ("alpha", alpha_field),
-                      ("tagged_cells", tagged_cells),
+                      # ("indicator", indicator),
+                      # ("smoothness", smoothness),
+                      ("mu", mu),
                       ("dt" if constant_cfl else "cfl", ts_field)]
         # species mass fractions
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
 
+        # unlimited species mass fractions
+        viz_fields.extend(
+            ("Y_limited_"+species_names[i], cv_limited.species_mass_fractions[i])
+            for i in range(nspecies))
+
         if nspecies > 2:
             temp_resid = get_temperature_update_compiled(
                 cv, dv.temperature)/dv.temperature
-            viz_ext = [("temp_resid", temp_resid)]
+            production_rates = compute_production_rates(fluid_state.cv,
+                                                        fluid_state.temperature)
+            viz_ext = [("temp_resid", temp_resid),
+                       ("production_rates", production_rates)]
             viz_fields.extend(viz_ext)
 
         # additional viz quantities, add in some non-dimensional numbers
@@ -976,16 +1382,19 @@ def main(ctx_factory=cl.create_some_context,
             cell_Pe_heat = length_scales*cv.speed/alpha_heat
             from mirgecom.viscous import get_local_max_species_diffusivity
             d_alpha_max = \
-                get_local_max_species_diffusivity(fluid_state.array_context,
-                                                  fluid_state.species_diffusivity)
+                get_local_max_species_diffusivity(
+                    fluid_state.array_context,
+                    fluid_state.species_diffusivity
+                )
             cell_Pe_mass = length_scales*cv.speed/d_alpha_max
+            cell_Pe_mass = 0.
             viz_ext = [("Re", cell_Re),
                        ("Pe_mass", cell_Pe_mass),
                        ("Pe_heat", cell_Pe_heat)]
             viz_fields.extend(viz_ext)
 
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
-                      step=step, t=t, overwrite=True)
+        write_visfile(dcoll=dcoll, io_fields=viz_fields, visualizer=visualizer,
+                      vizname=vizname, comm=comm, step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):
         restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
@@ -1008,7 +1417,7 @@ def main(ctx_factory=cl.create_some_context,
         cv = fluid_state.cv
         dv = fluid_state.dv
 
-        if check_naninf_local(discr, "vol", dv.pressure):
+        if check_naninf_local(dcoll, "vol", dv.pressure):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
@@ -1046,19 +1455,18 @@ def main(ctx_factory=cl.create_some_context,
             temp_err = vol_max(temp_resid)
             if temp_err > pyro_temp_tol:
                 health_error = True
-                #error = thaw(freeze(temp_err, actx), actx)
                 logger.info(f"Temperature is not converged "
                             f"{temp_err=} > {pyro_temp_tol}.")
 
         return health_error
 
-    def my_get_viscous_timestep(discr, state, alpha):
+    def my_get_viscous_timestep(dcoll, state, alpha):
         """Routine returns the the node-local maximum stable viscous timestep.
 
         Parameters
         ----------
-        discr: grudge.eager.EagerDGDiscretization
-            the discretization to use
+        dcoll: grudge.eager.EagerDGDiscretization
+            the discretization collection to use
         state: :class:`~mirgecom.gas_model.FluidState`
             Full fluid state including conserved and thermal state
         alpha: :class:`~meshmode.DOFArray`
@@ -1075,7 +1483,6 @@ def main(ctx_factory=cl.create_some_context,
 
         if state.is_viscous:
             nu = state.viscosity/state.mass_density
-            # this appears to break lazy for whatever reason
             from mirgecom.viscous import get_local_max_species_diffusivity
             d_alpha_max = \
                 get_local_max_species_diffusivity(
@@ -1088,13 +1495,13 @@ def main(ctx_factory=cl.create_some_context,
             + ((nu + d_alpha_max + alpha) / length_scales))
         )
 
-    def my_get_viscous_cfl(discr, dt, state, alpha):
+    def my_get_viscous_cfl(dcoll, dt, state, alpha):
         """Calculate and return node-local CFL based on current state and timestep.
 
         Parameters
         ----------
-        discr: :class:`grudge.eager.EagerDGDiscretization`
-            the discretization to use
+        dcoll: :class:`grudge.eager.EagerDGDiscretization`
+            the discretization collection to use
         dt: float or :class:`~meshmode.dof_array.DOFArray`
             A constant scalar dt or node-local dt
         state: :class:`~mirgecom.gas_model.FluidState`
@@ -1107,20 +1514,20 @@ def main(ctx_factory=cl.create_some_context,
         :class:`~meshmode.dof_array.DOFArray`
             The CFL at each node.
         """
-        return dt / my_get_viscous_timestep(discr, state=state, alpha=alpha)
+        return dt / my_get_viscous_timestep(dcoll, state=state, alpha=alpha)
 
     def my_get_timestep(t, dt, state, alpha):
         t_remaining = max(0, t_final - t)
         if constant_cfl:
-            ts_field = current_cfl * my_get_viscous_timestep(discr, state=state,
+            ts_field = current_cfl * my_get_viscous_timestep(dcoll, state=state,
                                                              alpha=alpha)
             from grudge.op import nodal_min
-            dt = actx.to_numpy(nodal_min(discr, "vol", ts_field))
+            dt = actx.to_numpy(nodal_min(dcoll, "vol", ts_field))
             cfl = current_cfl
         else:
-            ts_field = my_get_viscous_cfl(discr, dt=dt, state=state, alpha=alpha)
+            ts_field = my_get_viscous_cfl(dcoll, dt=dt, state=state, alpha=alpha)
             from grudge.op import nodal_max
-            cfl = actx.to_numpy(nodal_max(discr, "vol", ts_field))
+            cfl = actx.to_numpy(nodal_max(dcoll, "vol", ts_field))
 
         return ts_field, cfl, min(t_remaining, dt)
 
@@ -1135,25 +1542,54 @@ def main(ctx_factory=cl.create_some_context,
 
     sc_scale = get_sc_scale_compiled()
 
-    def limiter(cv, temp=None):
+    def limit_species_source(cv, pressure, temperature, species_enthalpies):
         spec_lim = make_obj_array([
-            bound_preserving_limiter(discr, cv.species_mass_fractions[i],
-                                     modify_average=True, mmin=0.0, mmax=1.0)
+            bound_preserving_limiter(dcoll, cv.species_mass_fractions[i],
+                                     mmin=0.0, mmax=1.0, modify_average=True)
             for i in range(nspecies)
         ])
 
+        # limit the sum to 1.0
+        #spec_lim = spec_lim/actx.np.sum(spec_lim)
+        aux = cv.mass*0.0
+        for i in range(nspecies):
+            aux = aux + spec_lim[i]
+        spec_lim = spec_lim/aux
+
         kin_energy = 0.5*np.dot(cv.velocity, cv.velocity)
 
-        energy_lim = cv.mass*(
-            gas_model.eos.get_internal_energy(temp, species_mass_fractions=spec_lim)
+        mass_lim = eos.get_density(pressure=pressure, temperature=temperature,
+                                   species_mass_fractions=spec_lim)
+
+        energy_lim = mass_lim*(
+            gas_model.eos.get_internal_energy(temperature,
+                                              species_mass_fractions=spec_lim)
             + kin_energy
         )
 
-        return make_conserved(dim=dim, mass=cv.mass, energy=energy_lim,
-                              momentum=cv.momentum, species_mass=cv.mass*spec_lim)
+        mom_lim = mass_lim*cv.velocity
+
+        cv_limited = make_conserved(dim=dim, mass=mass_lim, energy=energy_lim,
+                                    momentum=mom_lim,
+                                    species_mass=mass_lim*spec_lim)
+
+        spec_lim_source = species_limit_sigma*(spec_lim - cv.species_mass_fractions)
+        energy_lim_source = 0.*cv.mass
+        for i in range(nspecies):
+            energy_lim_source = (energy_lim_source +
+                spec_lim_source[i]*cv.mass*species_enthalpies[i])
+
+        cv_limited_source = make_conserved(
+            dim=dim, mass=cv.mass, energy=energy_lim_source, momentum=cv.momentum,
+            species_mass=cv.mass*spec_lim_source)
+
+        return make_obj_array([cv_limited, cv_limited_source])
+
+    limit_species_source_compiled = actx.compile(limit_species_source)
 
     def my_pre_step(step, t, dt, state):
 
+        cv, tseed = state
         try:
             if logmgr:
                 logmgr.tick_before()
@@ -1162,15 +1598,65 @@ def main(ctx_factory=cl.create_some_context,
             do_restart = check_step(step=step, interval=nrestart)
             do_health = check_step(step=step, interval=nhealth)
             do_status = check_step(step=step, interval=nstatus)
-            do_limit = check_step(step=step, interval=nlimit)
 
-            if any([do_viz, do_restart, do_health, do_status, do_limit]):
-                cv, tseed = state
-                if do_limit:
-                    fluid_state = create_fluid_state(cv=limiter(cv, temp=tseed),
+            # do this all the time so we can update tseed
+            fluid_state = create_fluid_state(cv=cv,
+                                             temperature_seed=tseed,
+                                             smoothness=no_smoothness)
+            state = make_obj_array([cv, fluid_state.temperature])
+
+            if any([do_viz, do_restart, do_health, do_status]):
+
+                # compute the limited cv so we can viz what the rhs will actually see
+                cv_limited = cv
+                if limit_species:
+                    limit_species_rhs = 0.*cv
+                    cv_limited, limit_species_rhs = limit_species_source_compiled(
+                        cv=cv, pressure=fluid_state.pressure,
+                        temperature=fluid_state.temperature,
+                        species_enthalpies=fluid_state.species_enthalpies)
+
+                if use_av == 0 or use_av == 1:
+                    fluid_state = create_fluid_state(cv=cv,
+                                                     smoothness=no_smoothness,
                                                      temperature_seed=tseed)
-                else:
-                    fluid_state = create_fluid_state(cv=cv, temperature_seed=tseed)
+                elif use_av == 2:
+                    smoothness = smoothness_indicator_compiled(cv_limited)
+                    # unlimited cv here as that is what gets written
+                    fluid_state = create_fluid_state(cv=cv,
+                                                     smoothness=smoothness,
+                                                     temperature_seed=tseed)
+                elif use_av == 3:
+                    # limited cv here to compute smoothness
+                    fluid_state = create_fluid_state(cv=cv_limited,
+                                                     smoothness=no_smoothness,
+                                                     temperature_seed=tseed)
+
+                    # recompute the dv to have the correct smoothness
+                    if do_viz:
+                        # use the divergence to compute the smoothness field
+                        # force_evaluation(actx, t)
+                        grad_cv = grad_cv_operator_compiled(fluid_state,
+                                                            time=t)
+                        # limited cv here to compute smoothness
+                        smoothness = compute_smoothness_compiled(cv=cv_limited,
+                                                                 dv=fluid_state.dv,
+                                                                 grad_cv=grad_cv)
+
+                        # unlimited cv here as that is what gets written
+                        fluid_state = create_fluid_state(cv=cv,
+                                                         smoothness=smoothness,
+                                                         temperature_seed=tseed)
+                        """
+                        # avoid recomputation of temperature
+                        force_evaluation(actx, smoothness)
+                        new_dv = replace(fluid_state.dv, smoothness=smoothness)
+                        fluid_state = replace(fluid_state, dv=new_dv)
+                        new_tv = gas_model.transport.transport_vars(
+                            cv=cv, dv=new_dv, eos=gas_model.eos)
+                        fluid_state = replace(fluid_state, tv=new_tv)
+                        """
+
                 # if the time integrator didn't force_eval, do so now
                 if not force_eval:
                     fluid_state = force_evaluation(actx, fluid_state)
@@ -1194,13 +1680,14 @@ def main(ctx_factory=cl.create_some_context,
 
             if do_viz:
                 my_write_viz(step=step, t=t, fluid_state=fluid_state,
-                             ts_field=ts_field, alpha_field=alpha_field)
+                             ts_field=ts_field, alpha_field=alpha_field,
+                             cv_limited=cv_limited)
 
         except MyRuntimeError:
             if rank == 0:
                 logger.error("Errors detected; attempting graceful exit.")
             my_write_viz(step=step, t=t, fluid_state=fluid_state, ts_field=ts_field,
-                         alpha_field=alpha_field)
+                         alpha_field=alpha_field, cv_limited=cv_limited)
             my_write_restart(step=step, t=t, cv=cv, temperature_seed=tseed)
             raise
 
@@ -1210,31 +1697,87 @@ def main(ctx_factory=cl.create_some_context,
         if logmgr:
             set_dt(logmgr, dt)
             logmgr.tick_after()
-        return state, dt
 
-    from mirgecom.gas_model import make_operator_fluid_states
-    from mirgecom.navierstokes import grad_cv_operator
+        return state, dt
 
     def my_rhs(t, state):
         cv, tseed = state
-        fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
-                                       temperature_seed=tseed)
+
+        limit_species_rhs = 0*cv
+        if limit_species:
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+            cv, limit_species_rhs = limit_species_source(
+                cv=cv, pressure=fluid_state.pressure,
+                temperature=fluid_state.temperature,
+                species_enthalpies=fluid_state.species_enthalpies)
+
+        if use_av == 0 or use_av == 1:
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+            """
+            # This should be equivalent and faster, but increases the comp time
+            if not limit_species:
+                fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                               temperature_seed=tseed,
+                                               smoothness=no_smoothness)
+            else:
+                fluid_state = replace(fluid_state, cv=cv)
+            """
+
+        elif use_av == 2:
+            smoothness = smoothness_indicator(
+                dcoll=dcoll, u=cv.mass, kappa=kappa_sc, s0=s0_sc)
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=smoothness)
+        elif use_av == 3:
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+
+            # use the divergence to compute the smoothness field
+            grad_fluid_cv = grad_cv_operator(
+                dcoll, gas_model, boundaries, fluid_state,
+                time=t, quadrature_tag=quadrature_tag)
+            smoothness = compute_smoothness(cv=cv, dv=fluid_state.dv,
+                                            grad_cv=grad_fluid_cv)
+
+            fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
+                                           temperature_seed=tseed,
+                                           smoothness=smoothness)
+            """
+            # This should be equivalent and faster?
+            # But the compilation is super slow
+            # and doesn't work in parallel?
+            new_dv = replace(fluid_state.dv, smoothness=smoothness)
+            fluid_state = replace(fluid_state, dv=new_dv)
+            new_tv = gas_model.transport.transport_vars(
+                cv=cv, dv=new_dv, eos=gas_model.eos)
+            fluid_state = replace(fluid_state, tv=new_tv)
+            """
+
         # Temperature seed RHS (keep tseed updated)
-        tseed_rhs = fluid_state.temperature - tseed
+        # MJA not correct for non-constant dt!!!
+        tseed_rhs = (fluid_state.temperature - tseed)/current_dt
 
         # Steps common to NS and AV (and wall model needs grad(temperature))
         operator_fluid_states = make_operator_fluid_states(
-            discr, fluid_state, gas_model, boundaries, quadrature_tag)
+            dcoll, fluid_state, gas_model, boundaries, quadrature_tag)
 
-        grad_fluid_cv = grad_cv_operator(
-            discr, gas_model, boundaries, fluid_state,
-            quadrature_tag=quadrature_tag,
-            operator_states_quad=operator_fluid_states)
+        if use_av != 3:
+            grad_fluid_cv = grad_cv_operator(
+                dcoll, gas_model, boundaries, fluid_state,
+                quadrature_tag=quadrature_tag,
+                operator_states_quad=operator_fluid_states)
 
         # Fluid CV RHS contributions
         ns_rhs = \
-            ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
+            ns_operator(dcoll, state=fluid_state, time=t, boundaries=boundaries,
                 gas_model=gas_model, quadrature_tag=quadrature_tag,
+                inviscid_numerical_flux_func=inviscid_numerical_flux_func,
                 operator_states_quad=operator_fluid_states,
                 grad_cv=grad_fluid_cv)
 
@@ -1244,10 +1787,10 @@ def main(ctx_factory=cl.create_some_context,
                 eos.get_species_source_terms(cv, temperature=fluid_state.temperature)
 
         av_rhs = 0*cv
-        if use_av:
+        if use_av == 1:
             alpha_field = sc_scale * fluid_state.speed
             av_rhs = \
-                av_laplacian_operator(discr, fluid_state=fluid_state,
+                av_laplacian_operator(dcoll, fluid_state=fluid_state,
                     boundaries=boundaries, gas_model=gas_model,
                     time=t, alpha=alpha_field, s0=s0_sc,
                     kappa=kappa_sc, quadrature_tag=quadrature_tag,
@@ -1258,13 +1801,15 @@ def main(ctx_factory=cl.create_some_context,
             sponge_rhs = _sponge_source(cv=cv)
 
         ignition_rhs = 0*cv
-        if use_ignition:
-            ignition_rhs = ignition_source(x_vec=x_vec, cv=cv, time=t)
+        if use_ignition > 0:
+            ignition_rhs = ignition_source(x_vec=x_vec, state=fluid_state,
+                                           eos=gas_model.eos, time=t)
 
-        cv_rhs = ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs
+        cv_rhs = (ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs +
+                  limit_species_rhs)
         return make_obj_array([cv_rhs, tseed_rhs])
 
-    current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
+    current_dt = get_sim_timestep(dcoll, current_state, current_t, current_dt,
                                   current_cfl, t_final, constant_cfl)
 
     current_step, current_t, stepper_state = \
@@ -1275,12 +1820,48 @@ def main(ctx_factory=cl.create_some_context,
                       t=current_t, t_final=t_final,
                       force_eval=force_eval,
                       state=make_obj_array([current_state.cv, temperature_seed]))
+
     current_cv, tseed = stepper_state
-    current_state = create_fluid_state(current_cv, tseed)
 
     # Dump the final data
     if rank == 0:
         logger.info("Checkpointing final state ...")
+
+    limit_species_rhs = 0*current_state.cv
+    current_cv_limited = current_cv
+    if limit_species:
+        fluid_state = create_fluid_state(cv=current_state.cv,
+                                         temperature_seed=tseed,
+                                         smoothness=no_smoothness)
+        current_cv_limited, limit_species_rhs = limit_species_source_compiled(
+            cv=current_state.cv, pressure=fluid_state.pressure,
+            temperature=fluid_state.temperature,
+            species_enthalpies=fluid_state.species_enthalpies)
+
+    if use_av == 0 or use_av == 1:
+        current_state = create_fluid_state(cv=current_cv,
+                                           smoothness=no_smoothness,
+                                           temperature_seed=tseed)
+    elif use_av == 2:
+        smoothness = smoothness_indicator_compiled(current_cv_limited)
+        current_state = create_fluid_state(cv=current_cv,
+                                           temperature_seed=tseed,
+                                           smoothness=smoothness)
+    elif use_av == 3:
+        current_state = create_fluid_state(cv=current_cv_limited,
+                                           temperature_seed=tseed,
+                                           smoothness=no_smoothness)
+
+        # use the divergence to compute the smoothness field
+        current_grad_cv = grad_cv_operator_compiled(
+            fluid_state=current_state, time=current_t)
+        smoothness = compute_smoothness_compiled(cv=current_cv, dv=current_state.dv,
+                                                 grad_cv=current_grad_cv)
+
+        current_state = create_fluid_state(cv=current_cv,
+                                           temperature_seed=tseed,
+                                           smoothness=smoothness)
+
     final_dv = current_state.dv
     alpha_field = my_get_alpha(current_state, alpha_sc)
     ts_field, cfl, dt = my_get_timestep(t=current_t, dt=current_dt,
@@ -1288,7 +1869,8 @@ def main(ctx_factory=cl.create_some_context,
     my_write_status(dt=dt, cfl=cfl, cv=current_state.cv, dv=final_dv)
 
     my_write_viz(step=current_step, t=current_t, fluid_state=current_state,
-                 ts_field=ts_field, alpha_field=alpha_field)
+                 ts_field=ts_field, alpha_field=alpha_field,
+                 cv_limited=current_cv_limited)
     my_write_restart(step=current_step, t=current_t, cv=current_state.cv,
                      temperature_seed=tseed)
 
