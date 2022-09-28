@@ -185,12 +185,10 @@ class HeatSource:
 
         # density of this new state
         new_mass = eos.get_density(pressure=pressure, temperature=temperature,
-                               species_mass_fractions=y)
-        new_internal_energy = eos.get_internal_energy(temperature=temperature,
-                                                  species_mass_fractions=y)
+                                   species_mass_fractions=y)
 
         # change the density so the pressure stays constant
-        mass_source = state.mass_density - new_mass
+        mass_source = new_mass - state.mass_density
 
         # keep the velocity constant
         momentum_source = state.velocity*mass_source
@@ -199,15 +197,7 @@ class HeatSource:
         species_mass_source = state.species_mass_fractions*mass_source
 
         # the source term that keeps the energy constant having changed the mass
-        energy_source = state.energy_density/state.mass_density*mass_source
-
-        # the source term that raises the temperature only (internal energy)
-        internal_energy_source = (((state.energy_density
-             - np.dot(state.momentum_density, state.momentum_density) /
-             (2.0*state.mass_density)) /
-            state.mass_density) - new_internal_energy)
-
-        energy_source += internal_energy_source*mass_source
+        energy_source = 0.5*np.dot(state.velocity, state.velocity)*mass_source
 
         return make_conserved(dim=self._dim, mass=mass_source,
                               energy=energy_source,
@@ -477,13 +467,8 @@ def main(ctx_factory=cl.create_some_context,
     if dim == 3:
         spark_center[2] = 0.035/2.
     spark_diameter = 0.0025
-
-    #spark_strength = 30000000./current_dt
-    spark_strength = 20000000./current_dt
-    #spark_strength = 5e-3
-
+    spark_strength = 20000000.
     spark_init_time = 999999999.
-
     spark_duration = 1.e-8
 
     if user_input_file:
@@ -605,6 +590,19 @@ def main(ctx_factory=cl.create_some_context,
             spark_init_time = float(input_data["ignition_init_time"])
         except KeyError:
             pass
+        try:
+            spark_strength = float(input_data["ignition_strength"])
+        except KeyError:
+            pass
+        try:
+            spark_duration = float(input_data["ignition_duration"])
+        except KeyError:
+            pass
+        try:
+            spark_diameter = float(input_data["ignition_diameter"])
+        except KeyError:
+            pass
+
         try:
             spark_init_loc_x = float(input_data["ignition_loc_x"])
         except KeyError:
@@ -860,7 +858,8 @@ def main(ctx_factory=cl.create_some_context,
     transport_sigma = 2.0
     transport_n = 0.666
     transport_lewis = np.ones(nspecies)
-    transport_lewis[i_h2] = 0.2
+    if nspecies > 3:
+        transport_lewis[i_h2] = 0.2
 
     if rank == 0:
         if transport_type == 0:
@@ -1803,7 +1802,7 @@ def main(ctx_factory=cl.create_some_context,
         ignition_rhs = 0*cv
         if use_ignition > 0:
             ignition_rhs = ignition_source(x_vec=x_vec, state=fluid_state,
-                                           eos=gas_model.eos, time=t)
+                                           eos=gas_model.eos, time=t)/current_dt
 
         cv_rhs = (ns_rhs + chem_rhs + av_rhs + sponge_rhs + ignition_rhs +
                   limit_species_rhs)
