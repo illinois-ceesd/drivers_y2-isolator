@@ -53,8 +53,11 @@ from mirgecom.logging_quantities import (
 )
 
 from mirgecom.navierstokes import ns_operator
-from mirgecom.artificial_viscosity import \
-    av_laplacian_operator, smoothness_indicator
+from mirgecom.artificial_viscosity import (
+    av_laplacian_operator, smoothness_indicator,
+    PrescribedFluidBoundaryAV,
+    IsothermalWallAV
+)
 from mirgecom.simutil import (
     check_step,
     generate_and_distribute_mesh,
@@ -72,10 +75,7 @@ from mirgecom.integrators import (rk4_step, lsrk54_step, lsrk144_step,
 
 from mirgecom.fluid import make_conserved
 from mirgecom.steppers import advance_state
-from mirgecom.boundary import (
-    PrescribedFluidBoundary,
-    IsothermalWallBoundary,
-)
+
 #from mirgecom.initializers import (Uniform, PlanarDiscontinuity)
 from mirgecom.eos import IdealSingleGas
 from mirgecom.transport import SimpleTransport
@@ -1052,9 +1052,9 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
                                     state_minus.array_context,
                                     _outflow_init, **kwargs)
 
-    inflow = PrescribedFluidBoundary(boundary_state_func=_inflow_state_func)
-    outflow = PrescribedFluidBoundary(boundary_state_func=_outflow_state_func)
-    wall = IsothermalWallBoundary()
+    inflow = PrescribedFluidBoundaryAV(boundary_state_func=_inflow_state_func)
+    outflow = PrescribedFluidBoundaryAV(boundary_state_func=_outflow_state_func)
+    wall = IsothermalWallAV()
 
     boundaries = {
         BoundaryDomainTag("inflow"): inflow,
